@@ -1,0 +1,135 @@
+/* Global Dark Theme - TunerPro V2 */
+
+/* Main Window & Backgrounds */
+QMainWindow,
+QWidget {
+    background-color: #121212;
+    color: #E0E0E0;
+    font-family: "Segoe UI", "Arial";
+}
+
+/* Tab Widget */
+QTabWidget::pane {
+    border: 1px solid #333333;
+    background-color: #121212;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background: #1E1E1E;
+    color: #A0A0A0;
+    padding: 8px 20px;
+    border: 1px solid #333333;
+    border-bottom: none;
+    min-width: 80px;
+}
+
+QTabBar::tab:selected {
+    background: #2D2D2D;
+    color: #FFFFFF;
+    border-top: 2px solid #007BFF;
+}
+
+QTabBar::tab:hover {
+    background: #252525;
+}
+
+/* Group Boxes */
+QGroupBox {
+    border: 1px solid #333333;
+    border-radius: 4px;
+    margin-top: 20px;
+    background-color: #1E1E1E;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    color: #007BFF;
+    font-weight: bold;
+}
+
+/* Sliders (Custom Thick Blue Style) */
+QSlider::groove:horizontal {
+    border: 1px solid #333333;
+    height: 8px;
+    background: #2A2A2A;
+    margin: 2px 0;
+    border-radius: 4px;
+}
+
+QSlider::handle:horizontal {
+    background: #E0E0E0;
+    border: 1px solid #5c5c5c;
+    width: 18px;
+    height: 18px;
+    margin: -6px 0;
+    border-radius: 9px;
+}
+
+QSlider::add-page:horizontal {
+    background: #2A2A2A;
+    border-radius: 4px;
+}
+
+QSlider::sub-page:horizontal {
+    background: #007BFF;
+    border-radius: 4px;
+}
+
+/* Tables */
+QTableWidget {
+    background-color: #1E1E1E;
+    gridline-color: #333333;
+    border: 1px solid #333333;
+    color: #E0E0E0;
+}
+
+QHeaderView::section {
+    background-color: #252525;
+    color: #A0A0A0;
+    padding: 5px;
+    border: 1px solid #333333;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+    border: none;
+    background: #121212;
+    width: 10px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #444444;
+    min-height: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+/* Labels */
+QLabel {
+    color: #E0E0E0;
+}
+
+/* Specific Classes (if any) */
+.highlight-text {
+    color: #007BFF;
+}
+
+.success-text {
+    color: #00FF00;
+}
+
+.warning-text {
+    color: #FFA500;
+}
+
+.danger-text {
+    color: #FF0000;
+}

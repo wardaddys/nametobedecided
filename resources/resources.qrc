@@ -1,0 +1,17 @@
+<RCC>
+    <qresource prefix="/">
+        <file>styles/darktheme.qss</file>
+        <file>icons/app_icon.png</file>
+        <file>icons/connect.png</file>
+        <file>icons/disconnect.png</file>
+        <file>icons/save.png</file>
+        <file>icons/read.png</file>
+        <file>icons/write.png</file>
+        <file>images/openefi_logo.png</file>
+        <file>fonts/JetBrainsMono-Regular.ttf</file>
+        <file>fonts/JetBrainsMono-Light.ttf</file>
+        <file>fonts/BarlowCondensed-Regular.ttf</file>
+        <file>fonts/BarlowCondensed-Medium.ttf</file>
+        <file>fonts/BarlowCondensed-SemiBold.ttf</file>
+    </qresource>
+</RCC>

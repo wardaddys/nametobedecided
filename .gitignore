@@ -1,0 +1,66 @@
+# Qt
+*.user
+*.user.*
+*.qmake.stash
+*.qmake.cache
+*.qrc.cpp
+*.qrc.c
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+Makefile*
+build/
+build-*/
+*.pro.user
+*.pro.user.*
+*.qm
+
+# C++
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.lib
+
+# IDEs
+.vscode/
+.idea/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (Separate Repo)
+docs/
+
+# Build & Deployment
+build/
+build-*/
+build_mingw/
+_CPack_Packages/
+*.zip
+*.exe
+*.msi
+*.log
+TunerPro.log
+build_output.log
+build_verbose.log
+
+# IDE & Agents
+.qtcreator/
+.agents/
+.vscode/
+.idea/
+
+# Temp/Draft Files
+tunerpro_all_code*.md
+gather_code.py
+download_fonts.py
+infoforskill.md
