@@ -8,6 +8,9 @@
 #include <QVariant>
 #include <QVector>
 #include <QStack>
+#include <QtMath>       // qRound — used by fixed-point scaling
+#include <algorithm>    // std::clamp
+#include "ECUData.h"
 
 /**
  * @brief ECU Definition Parser for TunerPro
@@ -72,21 +75,63 @@ public:
     bool controllerPriority = false;
     bool readOnly = false;
     
-    // Helper methods for value conversion
+    // ================================================================
+    //  Fixed-Point Scaling — "No-Bullshit" Accuracy Protocol
+    //
+    //  The Arduino Mega only stores raw integer bytes. Every value
+    //  displayed in the UI MUST be the exact result of:
+    //      userValue = (rawByte + translate) * scale
+    //  And every value written back MUST round correctly:
+    //      rawByte   = clamp( round( user/scale - translate ) )
+    //
+    //  Three guarantees:
+    //    1. userToRaw uses qRound — no silent truncation
+    //    2. rawClamp enforces wire-type limits (U08 → 0-255, etc.)
+    //    3. quantize round-trips user→raw→user so the UI always
+    //       shows the EXACT value the ECU will store
+    // ================================================================
+
+    /// Convert raw integer from ECU page data to user-facing double.
+    double rawToUser(int rawValue) const {
+      return (static_cast<double>(rawValue) + translate) * scale;
+    }
+    
+    /// Convert user-facing double to raw integer for the ECU.
+    /// Uses qRound (banker's rounding) — NOT truncation — so that
+    /// 34.6° with scale=1 becomes raw=35, not raw=34.
+    int userToRaw(double userValue) const {
+      return rawClamp(qRound((userValue / scale) - translate));
+    }
+    
+    /// Clamp a raw value to the valid range for this constant's wire type.
+    /// Prevents byte overflow when writing to ECU page memory.
+    int rawClamp(int raw) const {
+      if (type == "U08")  return std::clamp(raw, 0, 255);
+      if (type == "S08")  return std::clamp(raw, -128, 127);
+      if (type == "U16")  return std::clamp(raw, 0, 65535);
+      if (type == "S16")  return std::clamp(raw, -32768, 32767);
+      // U32/S32/F32 — no practical clamp needed at int range
+      return raw;
+    }
+    
+    /// Quantize a user value to the nearest value representable by
+    /// the ECU's raw integer storage.  UI MUST call this after every
+    /// edit so the display matches what the ECU will actually store.
+    ///
+    ///   User types 34.6° → quantize → rawToUser(userToRaw(34.6))
+    ///     = rawToUser(35)  = (35 + 0) * 1.0 = 35.0°
+    ///   UI snaps to 35.0° — no desync.
+    double quantize(double userValue) const {
+      return rawToUser(userToRaw(userValue));
+    }
+    
+    /// Byte size of the raw wire type (used by table element size inference).
     int byteSize() const {
       if (type == "U08" || type == "S08") return 1;
       if (type == "U16" || type == "S16") return 2;
       if (type == "U32" || type == "S32" || type == "F32") return 4;
       if (paramClass == "bits") return 1;
       return 1;
-    }
-    
-    double rawToUser(int rawValue) const {
-      return (rawValue + translate) * scale;
-    }
-    
-    int userToRaw(double userValue) const {
-      return static_cast<int>((userValue / scale) - translate);
     }
   };
 
@@ -118,6 +163,22 @@ public:
   
   QString getSignature() const { return m_signature; }
   int getOutputChannelsSize() const { return m_outputChannelsSize; }
+  
+  /**
+   * @brief Validate if a received ECU signature matches this definition
+   * 
+   * @param receivedSig The signature received from the connected ECU
+   * @return Validation result with detailed error message if mismatch
+   */
+  struct SignatureValidation {
+    bool isValid;
+    QString message;
+    
+    SignatureValidation(bool valid = true, const QString &msg = "") 
+        : isValid(valid), message(msg) {}
+  };
+  
+  SignatureValidation validateSignature(const ECUSignature &receivedSig) const;
 
   // Get default Speeduino constants when no INI file is loaded
   static QMap<QString, Constant> getDefaultSpeeduinoConstants();
@@ -142,6 +203,9 @@ public:
 
   // Directive state (for #if/#set)
   bool isConditionActive(const QString& name) const;
+  
+  // Type size helper (public for use by protocol parsers)
+  int getTypeSize(const QString &type) const;
 
 private:
   // Data storage
@@ -172,7 +236,6 @@ private:
   BitField parseBitField(const QString &shapeStr, const QStringList &options);
   QByteArray parseCommandBytes(const QString &cmdStr);
   QString expandDefines(const QString &line);
-  int getTypeSize(const QString &type);
 };
 
 #endif // ECUDEFINITION_H

@@ -207,3 +207,37 @@ set(CPACK_NSIS_CREATE_ICONS_EXTRA "CreateShortCut '$DESKTOP\\TunerPro V2.lnk' '$
 set(CPACK_NSIS_DELETE_ICONS_EXTRA "Delete '$DESKTOP\\TunerPro V2.lnk'")
 
 include(CPack)
+
+# Tests
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+
+    add_executable(TunerProCoreTests
+        tests/ECUSettingsManagerGuardrailsTest.cpp
+        src/core/ECUSettingsManager.cpp
+        src/core/ECUDefinition.cpp
+        src/core/ECUData.cpp
+        src/core/SerialManager.cpp
+        src/core/SpeeduinoProtocol.cpp
+        src/utils/Logger.cpp
+    )
+
+    target_include_directories(TunerProCoreTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${CMAKE_SOURCE_DIR}/src/widgets
+        ${CMAKE_SOURCE_DIR}/src/dialogs
+        ${CMAKE_SOURCE_DIR}/src/utils
+    )
+
+    target_link_libraries(TunerProCoreTests
+        Qt6::Core
+        Qt6::Test
+        Qt6::SerialPort
+        Qt6::Xml
+        Qt6::Network
+    )
+
+    add_test(NAME ECUSettingsManagerGuardrails COMMAND TunerProCoreTests)
+endif()

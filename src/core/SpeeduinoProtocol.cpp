@@ -11,6 +11,7 @@
 
 #include "SpeeduinoProtocol.h"
 #include <QDebug>
+#include <cstring>  // std::memcpy for F32 IEEE 754 extraction
 
 // ============================================================================
 //  CRC32 — Standard reflected polynomial 0xEDB88320
@@ -162,6 +163,18 @@ uint16_t SpeeduinoProtocol::extractUint16BE(const QByteArray &data, int offset) 
     if (offset + 1 >= data.size()) return 0;
     return (static_cast<uint16_t>(static_cast<uint8_t>(data.at(offset))) << 8) |
            static_cast<uint16_t>(static_cast<uint8_t>(data.at(offset + 1)));
+}
+
+uint32_t SpeeduinoProtocol::extractUint32LE(const QByteArray &data, int offset) {
+    if (offset + 3 >= data.size()) return 0;
+    return static_cast<uint32_t>(static_cast<uint8_t>(data.at(offset)))
+         | (static_cast<uint32_t>(static_cast<uint8_t>(data.at(offset + 1))) << 8)
+         | (static_cast<uint32_t>(static_cast<uint8_t>(data.at(offset + 2))) << 16)
+         | (static_cast<uint32_t>(static_cast<uint8_t>(data.at(offset + 3))) << 24);
+}
+
+int32_t SpeeduinoProtocol::extractInt32LE(const QByteArray &data, int offset) {
+    return static_cast<int32_t>(extractUint32LE(data, offset));
 }
 
 // ============================================================================
@@ -442,4 +455,132 @@ bool SpeeduinoProtocol::isAckResponse(const QByteArray &data) {
 
 bool SpeeduinoProtocol::isNakResponse(const QByteArray &data) {
     return data.size() >= 1 && data.at(0) == SpeeduinoCommands::RESPONSE_NAK;
+}
+
+// ============================================================================
+//  [CRIT-1] INI-Driven Real-Time Data Parser
+//
+//  Dynamically extracts output channel values using the offset, type, scale,
+//  and translate metadata parsed from the INI file. This replaces the
+//  hardcoded offset table with a data-driven approach matching TunerStudio.
+//
+//  For backward compatibility, also populates the legacy RealTimeData struct
+//  by mapping well-known channel names to struct members.
+// ============================================================================
+
+SpeeduinoProtocol::DynamicRTData SpeeduinoProtocol::parseRealTimeDataDynamic(
+    const QByteArray &payload,
+    const ECUDefinition &def)
+{
+    DynamicRTData result;
+    result.legacy = RealTimeData();  // Zero-initialized
+    result.legacy.timestamp = QDateTime::currentDateTime();
+
+    const auto &channels = def.getOutputChannels();
+    const int payloadSize = payload.size();
+
+    for (auto it = channels.constBegin(); it != channels.constEnd(); ++it) {
+        const ECUDefinition::OutputChannel &ch = it.value();
+
+        // Skip expression-based channels (no evaluator yet)
+        if (ch.type == "EXPR") {
+            continue;
+        }
+
+        // Bounds check
+        const int typeSize = def.getTypeSize(ch.type);
+        if (ch.offset < 0 || ch.offset + typeSize > payloadSize) {
+            continue;
+        }
+
+        double userValue = 0.0;
+
+        if (ch.isBits) {
+            // ---- Bit-field extraction ----
+            uint8_t raw = extractUint8(payload, ch.offset);
+            int width = ch.bitField.highBit - ch.bitField.lowBit + 1;
+            uint8_t mask = static_cast<uint8_t>(((1 << width) - 1) << ch.bitField.lowBit);
+            int bitVal = (raw & mask) >> ch.bitField.lowBit;
+            userValue = static_cast<double>(bitVal);
+        } else if (ch.type == "U08") {
+            int rawVal = extractUint8(payload, ch.offset);
+            userValue = (static_cast<double>(rawVal) + ch.translate) * ch.scale;
+        } else if (ch.type == "S08") {
+            int rawVal = extractInt8(payload, ch.offset);
+            userValue = (static_cast<double>(rawVal) + ch.translate) * ch.scale;
+        } else if (ch.type == "U16") {
+            int rawVal = extractUint16LE(payload, ch.offset);
+            userValue = (static_cast<double>(rawVal) + ch.translate) * ch.scale;
+        } else if (ch.type == "S16") {
+            int rawVal = extractInt16LE(payload, ch.offset);
+            userValue = (static_cast<double>(rawVal) + ch.translate) * ch.scale;
+        } else if (ch.type == "U32") {
+            uint32_t rawVal = extractUint32LE(payload, ch.offset);
+            userValue = (static_cast<double>(rawVal) + ch.translate) * ch.scale;
+        } else if (ch.type == "S32") {
+            int32_t rawVal = extractInt32LE(payload, ch.offset);
+            userValue = (static_cast<double>(rawVal) + ch.translate) * ch.scale;
+        } else if (ch.type == "F32") {
+            uint32_t bits = extractUint32LE(payload, ch.offset);
+            float fval;
+            std::memcpy(&fval, &bits, sizeof(float));
+            userValue = static_cast<double>(fval);  // F32 is already in user units
+        } else {
+            continue;  // Unknown type
+        }
+
+        // Store in dynamic map
+        result.channels.insert(ch.name, userValue);
+
+        // ---- Legacy struct mapping ----
+        // Map well-known INI channel names to RealTimeData fields.
+        // This keeps existing widgets working without modification.
+        const QString &n = ch.name;
+        RealTimeData &rt = result.legacy;
+
+        if      (n == "secl")            rt.secl = extractUint8(payload, ch.offset);
+        else if (n == "status1")         rt.status1 = extractUint8(payload, ch.offset);
+        else if (n == "engine")          rt.engine = extractUint8(payload, ch.offset);
+        else if (n == "syncLossCounter") rt.syncLossCounter = extractUint8(payload, ch.offset);
+        else if (n == "map")             rt.map = extractUint16LE(payload, ch.offset);
+        else if (n == "iat")             rt.iat = extractUint8(payload, ch.offset);
+        else if (n == "clt")             rt.coolant = extractUint8(payload, ch.offset);
+        else if (n == "batCorrection")   rt.batCorrection = extractUint8(payload, ch.offset);
+        else if (n == "battery10")       rt.battery10 = extractUint8(payload, ch.offset);
+        else if (n == "O2")              rt.o2 = extractUint8(payload, ch.offset);
+        else if (n == "egoCorrection")   rt.egoCorrection = extractUint8(payload, ch.offset);
+        else if (n == "iatCorrection")   rt.iatCorrection = extractUint8(payload, ch.offset);
+        else if (n == "wueCorrection")   rt.wueCorrection = extractUint8(payload, ch.offset);
+        else if (n == "rpm")             rt.rpm = extractUint16LE(payload, ch.offset);
+        else if (n == "aeAmount")        rt.aeAmount = extractUint8(payload, ch.offset);
+        else if (n == "corrections")     rt.corrections = extractUint16LE(payload, ch.offset);
+        else if (n == "ve")              rt.ve = extractUint8(payload, ch.offset);
+        else if (n == "afrTarget")       rt.afrTarget = extractUint8(payload, ch.offset);
+        else if (n == "pw1")             rt.pw1 = extractUint16LE(payload, ch.offset);
+        else if (n == "tpsDOT")          rt.tpsDOT = extractInt16LE(payload, ch.offset);
+        else if (n == "advance")         rt.advance = extractInt8(payload, ch.offset);
+        else if (n == "tps")             rt.tps = extractUint8(payload, ch.offset);
+        else if (n == "loopsPerSecond")  rt.loopsPerSecond = extractUint16LE(payload, ch.offset);
+        else if (n == "freeRAM")         rt.freeRAM = extractUint16LE(payload, ch.offset);
+        else if (n == "boostTarget")     rt.boostTarget = extractUint8(payload, ch.offset);
+        else if (n == "boostDuty")       rt.boostDuty = extractUint8(payload, ch.offset);
+        else if (n == "spark")           rt.status2 = extractUint8(payload, ch.offset);
+        else if (n == "rpmDOT")          rt.rpmDOT = extractInt16LE(payload, ch.offset);
+        else if (n == "ethanolPct")      rt.ethanolPct = extractUint8(payload, ch.offset);
+        else if (n == "flexCorrection")  rt.flexCorrection = extractUint8(payload, ch.offset);
+        else if (n == "baro")            rt.baro = extractUint8(payload, ch.offset);
+        else if (n == "tpsADC")          rt.tpsADC = extractUint8(payload, ch.offset);
+        else if (n == "errorByte")       rt.errorByte = extractUint8(payload, ch.offset);
+        else if (n == "dwell")           rt.dwell = extractUint16LE(payload, ch.offset);
+        else if (n == "CLIdleTarget")    rt.CLIdleTarget = extractUint8(payload, ch.offset);
+        else if (n == "vss")             rt.vss = extractUint16LE(payload, ch.offset);
+        else if (n == "gear")            rt.gear = extractUint8(payload, ch.offset);
+        else if (n == "fuelPressure")    rt.fuelPressure = extractUint8(payload, ch.offset);
+        else if (n == "oilPressure")     rt.oilPressure = extractUint8(payload, ch.offset);
+        else if (n == "fanDuty")         rt.fanDuty = extractUint8(payload, ch.offset);
+        else if (n == "knockCount")      rt.knockCount = extractUint8(payload, ch.offset);
+        else if (n == "knockRetard")     rt.knockRetard = extractUint8(payload, ch.offset);
+    }
+
+    return result;
 }

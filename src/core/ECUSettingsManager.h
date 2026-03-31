@@ -32,6 +32,8 @@ class SerialManager;
 class ECUSettingsManager : public QObject {
     Q_OBJECT
 
+    friend class ECUSettingsManagerGuardrailsTest;
+
 public:
     static const int MAX_PAGES = 16;
     static const int MAX_PAGE_SIZE = 288;
@@ -185,6 +187,13 @@ private slots:
 
 private:
     void initializeSettings();
+    bool hasDefinitionLoaded() const;
+    int pageSizeFor(quint8 page) const;
+    int constantByteSize(const ECUDefinition::Constant &def) const;
+    bool validateConstantBounds(const ECUDefinition::Constant &def, QString *error = nullptr) const;
+    bool validateTableBounds(const ECUDefinition::Table &def, QString *error = nullptr) const;
+    bool validateConstantCollisions(const QMap<QString, ECUDefinition::Constant> &definitions,
+                                    QString *error = nullptr) const;
     void extractSettingsFromPage(quint8 page);
     void extractTablesFromPage(quint8 page); // Added
     QByteArray encodeValue(const ECUDefinition::Constant &def, const QVariant &value) const;
@@ -202,6 +211,7 @@ private:
     bool m_pageDirty[MAX_PAGES];                 // Pages with pending writes
     bool m_pageLoaded[MAX_PAGES];                // Pages successfully read
     bool m_isLoaded;
+    bool m_definitionLoaded;
     int m_pagesRequested;
     int m_pagesReceived;
     

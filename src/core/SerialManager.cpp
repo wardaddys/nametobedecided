@@ -43,7 +43,16 @@ SerialManager::SerialManager(QObject *parent)
 }
 
 bool SerialManager::loadEcuDefinition(const QString &filePath) {
-    return m_protocol->loadDefinition(filePath);
+    // Load definition into m_ecuDefinition for signature validation
+    bool defLoaded = m_ecuDefinition.load(filePath);
+    if (defLoaded) {
+        Logger::info("ECU Definition loaded for signature validation: " + filePath);
+        // Also load into protocol for constants/etc.
+        return m_protocol->loadDefinition(filePath);
+    } else {
+        Logger::warning("Failed to load ECU Definition: " + filePath);
+        return false;
+    }
 }
 
 SerialManager::~SerialManager() { disconnectFromDevice(); }
@@ -76,6 +85,9 @@ bool SerialManager::connectToDevice(const QString &portName, qint32 baudRate) {
     if (isConnected()) {
         disconnectFromDevice();
     }
+
+    // Always require fresh validation for each connection session.
+    m_signatureValidated = false;
 
     m_portName = portName;
     m_baudRate = baudRate;
@@ -156,6 +168,7 @@ void SerialManager::disconnectFromDevice() {
     m_receiveBuffer.clear();
     m_isPolling = false;
     m_awaitingResponse = false;
+    m_signatureValidated = false;
 
     Logger::info("Disconnected from device");
 }
@@ -219,6 +232,14 @@ void SerialManager::readTable(quint8 table, quint16 offset, quint16 size) {
 
 void SerialManager::writeTable(quint8 table, quint16 offset,
                                const QByteArray &data) {
+    // ===== SIGNATURE VALIDATION GATE: Block writes if signature not validated =====
+    if (!m_signatureValidated && !m_isSimulation) {
+        Logger::error("WRITE BLOCKED: ECU signature has not been validated. "
+                      "Definition must match ECU firmware before writes are allowed.");
+        emit error("Write blocked: ECU signature not validated against definition");
+        return;
+    }
+    
     SerialCommand cmd;
     cmd.data = m_protocol->createWritePageRequest(table, offset, data);
     cmd.type = CommandType::WritePage;
@@ -230,6 +251,14 @@ void SerialManager::writeTable(quint8 table, quint16 offset,
 }
 
 void SerialManager::sendBurnCommand(quint8 page) {
+    // ===== SIGNATURE VALIDATION GATE: Block burn if signature not validated =====
+    if (!m_signatureValidated && !m_isSimulation) {
+        Logger::error("BURN BLOCKED: ECU signature has not been validated. "
+                      "Definition must match ECU firmware before burn operations are allowed.");
+        emit error("Burn blocked: ECU signature not validated against definition");
+        return;
+    }
+    
     SerialCommand cmd;
     cmd.data = m_protocol->createBurnPageRequest(page);
     cmd.type = CommandType::BurnPage;
@@ -667,6 +696,22 @@ void SerialManager::processResponse(const QByteArray &payload) {
 
             ECUSignature sig = m_protocol->parseSignature(sigData);
             if (sig.isValid()) {
+                // ===== SIGNATURE VALIDATION GATE (Phase 1) =====
+                // Validate received signature against loaded definition
+                auto validation = m_ecuDefinition.validateSignature(sig);
+                
+                if (!validation.isValid) {
+                    // Signature mismatch — BLOCK connection
+                    Logger::error("SIGNATURE VALIDATION FAILED: " + validation.message);
+                    emit signatureValidationFailed(validation.message);
+                    emit error("ECU signature validation failed: " + validation.message);
+                    disconnectFromDevice();
+                    return;
+                }
+                
+                // Signature validated
+                Logger::info("Signature validation passed: " + validation.message);
+                m_signatureValidated = true;
                 m_signature = sig;
                 m_status = ConnectionStatus::Connected;
                 emit connectionStatusChanged(m_status);

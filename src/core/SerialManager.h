@@ -10,6 +10,7 @@
 #define SERIALMANAGER_H
 
 #include "ECUData.h"
+#include "ECUDefinition.h"
 #include "SpeeduinoProtocol.h"
 #include <QObject>
 #include <QQueue>
@@ -79,6 +80,14 @@ signals:
     void pollingRateChanged(double hz);
     void tableResponseReceived(quint8 table, quint16 offset, const QByteArray &data);
     void pageCRCReceived(quint8 page, uint32_t crc);
+    
+    /**
+     * @brief Emitted when ECU signature fails validation against loaded definition
+     * 
+     * This is a CRITICAL safety event. Writes must be blocked when this signal
+     * is emitted, as the ECU may not be compatible with the tuning definition.
+     */
+    void signatureValidationFailed(const QString &reason);
 
 private slots:
     void onReadyRead();
@@ -98,6 +107,8 @@ private:
     QSerialPort *m_serialPort;
     ConnectionStatus m_status;
     ECUSignature m_signature;
+    ECUDefinition m_ecuDefinition;          ///< Loaded ECU definition for signature validation
+    bool m_signatureValidated = false;      ///< True if signature matches loaded definition
 
     // Simulation
     bool m_isSimulation = false;

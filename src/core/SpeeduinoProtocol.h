@@ -17,6 +17,8 @@
 #include "SpeeduinoConstants.h"
 #include <QByteArray>
 #include <QObject>
+#include <QVariantMap>
+#include <cstring>  // memcpy for F32
 
 /**
  * @brief Speeduino protocol command bytes
@@ -119,8 +121,29 @@ public:
   QByteArray createToothLogRequest();                             ///< 'T'
 
   // === Response Parsing ===
-  RealTimeData parseRealTimeData(const QByteArray &data);
+  RealTimeData parseRealTimeData(const QByteArray &data);  ///< Legacy 130-byte hardcoded parser
   ECUSignature parseSignature(const QByteArray &data);
+  
+  /**
+   * @brief [CRIT-1] INI-driven real-time data parser
+   * 
+   * Replaces hardcoded offset mapping with dynamic extraction
+   * using OutputChannel definitions loaded from the INI file.
+   * Returns a QVariantMap keyed by channel name with user-unit values.
+   *
+   * Also populates the legacy RealTimeData struct by mapping known
+   * field names to struct members, so both APIs remain functional.
+   *
+   * @param payload  Raw bytes from 'A' command response
+   * @param def      Loaded ECU definition with OutputChannel map
+   * @return Pair of legacy struct and dynamic map
+   */
+  struct DynamicRTData {
+      RealTimeData legacy;       ///< Populated for backward-compat widgets
+      QVariantMap  channels;     ///< All channels keyed by INI name
+  };
+  DynamicRTData parseRealTimeDataDynamic(const QByteArray &payload,
+                                         const ECUDefinition &def);
 
   // === CRC32 (New Protocol) ===
   static uint32_t calculateCRC32(const QByteArray &data);
@@ -140,6 +163,8 @@ private:
   static uint8_t  extractUint8(const QByteArray &data, int offset);
   static int8_t   extractInt8(const QByteArray &data, int offset);
   static uint16_t extractUint16BE(const QByteArray &data, int offset);
+  static uint32_t extractUint32LE(const QByteArray &data, int offset);
+  static int32_t  extractInt32LE(const QByteArray &data, int offset);
 };
 
 #endif // SPEEDUINOPROTOCOL_H

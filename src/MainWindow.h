@@ -49,6 +49,7 @@ private slots:
   void onDisableDemoMode();
   void onDataReceived(const RealTimeData &data);
   void onError(const QString &error);
+  void onEcuSettingsError(const QString &error);
   void onDisconnected();
   void onLiveTuningToggled();
 

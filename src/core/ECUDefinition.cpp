@@ -1,5 +1,6 @@
 
 #include "ECUDefinition.h"
+#include "ECUData.h"
 #include <QDebug>
 #include <QFile>
 #include <QRegularExpression>
@@ -113,13 +114,15 @@ bool ECUDefinition::processDirective(const QString &line) {
     }
     
     // #elif CONDITION
+    // [CRIT-6] Must AND with parent context, same as #if
     if (directive.startsWith("#elif ")) {
         if (!m_conditionalStack.isEmpty()) {
             m_conditionalStack.pop();
         }
         QString condName = directive.mid(6).trimmed();
         bool condValue = m_conditions.value(condName, false);
-        m_conditionalStack.push(condValue);
+        bool parentActive = m_conditionalStack.isEmpty() ? true : m_conditionalStack.top();
+        m_conditionalStack.push(condValue && parentActive);
         return true;
     }
     
@@ -167,7 +170,7 @@ void ECUDefinition::parseTunerStudio(QTextStream &in) {
         QString line = in.readLine().trimmed();
         
         if (line.isEmpty() || line.startsWith(";")) continue;
-        if (line.startsWith("[")) return; // Next section
+        if (line.startsWith("[")) return; // Next section — main loop handles it
         if (line.startsWith("#")) {
             processDirective(line);
             continue;
@@ -188,9 +191,14 @@ void ECUDefinition::parseOutputChannels(QTextStream &in) {
     QRegularExpression scalarRegex(
         R"(^(\w+)\s*=\s*scalar\s*,\s*(\w+)\s*,\s*(\d+)\s*,\s*\"([^\"]*)\"\s*,\s*([\d\.-]+)\s*,\s*([\d\.-]+))");
     
-    // Regex for bits: name = bits, type, offset, [low:high]
+    // Regex for bits with bracket notation: name = bits, type, offset, [low:high]
     QRegularExpression bitsRegex(
         R"(^(\w+)\s*=\s*bits\s*,\s*(\w+)\s*,\s*(\d+)\s*,\s*\[(\d+):(\d+)(\+\d+)?\])");
+    
+    // [SER-2] Regex for bits with simple comma-separated format:
+    //   name = bits, type, offset, "label", scale, translate
+    QRegularExpression bitsSimpleRegex(
+        R"(^(\w+)\s*=\s*bits\s*,\s*(\w+)\s*,\s*(\d+)\s*,\s*\"([^\"]*)\"\s*,\s*([\d\.-]+)\s*,\s*([\d\.-]+))");
     
     // Regex for expression: name = { expression }, "units"
     QRegularExpression exprRegex(
@@ -200,7 +208,7 @@ void ECUDefinition::parseOutputChannels(QTextStream &in) {
         QString line = in.readLine().trimmed();
         
         if (line.isEmpty() || line.startsWith(";")) continue;
-        if (line.startsWith("[")) return;
+        if (line.startsWith("[")) return; // Next section — main loop handles it
         if (line.startsWith("#")) {
             processDirective(line);
             continue;
@@ -229,7 +237,7 @@ void ECUDefinition::parseOutputChannels(QTextStream &in) {
             continue;
         }
         
-        // Try bits match
+        // Try bits match (bracket notation: [low:high])
         match = bitsRegex.match(line);
         if (match.hasMatch()) {
             OutputChannel channel;
@@ -245,6 +253,34 @@ void ECUDefinition::parseOutputChannels(QTextStream &in) {
             }
             
             m_outputChannels.insert(channel.name, channel);
+            
+            int typeSize = getTypeSize(channel.type);
+            int end = channel.offset + typeSize;
+            if (end > m_outputChannelsSize) m_outputChannelsSize = end;
+            continue;
+        }
+        
+        // [SER-2] Try simple bits match (comma-separated: "label", scale, translate)
+        match = bitsSimpleRegex.match(line);
+        if (match.hasMatch()) {
+            OutputChannel channel;
+            channel.name = match.captured(1);
+            channel.type = match.captured(2);
+            channel.offset = match.captured(3).toInt();
+            channel.units = match.captured(4);
+            channel.scale = match.captured(5).toDouble();
+            channel.translate = match.captured(6).toDouble();
+            channel.isBits = true;
+            // Default: entire byte is the bit field
+            channel.bitField.lowBit = 0;
+            channel.bitField.highBit = (getTypeSize(channel.type) * 8) - 1;
+            channel.bitField.offset = 0;
+            
+            m_outputChannels.insert(channel.name, channel);
+            
+            int typeSize = getTypeSize(channel.type);
+            int end = channel.offset + typeSize;
+            if (end > m_outputChannelsSize) m_outputChannelsSize = end;
             continue;
         }
         
@@ -283,7 +319,7 @@ void ECUDefinition::parseConstants(QTextStream &in, int pageId) {
         QString line = in.readLine().trimmed();
         
         if (line.isEmpty() || line.startsWith(";")) continue;
-        if (line.startsWith("[")) return;
+        if (line.startsWith("[")) return; // Next section — main loop handles it
         if (line.startsWith("#")) {
             processDirective(line);
             continue;
@@ -304,9 +340,14 @@ void ECUDefinition::parseConstants(QTextStream &in, int pageId) {
             continue;
         }
         
-        // Replace offset keywords
-        line.replace("nextOffset", QString::number(nextOffset));
-        line.replace("lastOffset", QString::number(lastOffset));
+        // [CRIT-5] Replace offset keywords using word-boundary-safe regex
+        //   Prevents corruption of names like "injAngleOffset" that contain "Offset"
+        {
+            static QRegularExpression rxNext(QStringLiteral("\\bnextOffset\\b"));
+            static QRegularExpression rxLast(QStringLiteral("\\blastOffset\\b"));
+            line.replace(rxNext, QString::number(nextOffset));
+            line.replace(rxLast, QString::number(lastOffset));
+        }
 
         // Try scalar match
         QRegularExpressionMatch match = scalarRegex.match(line);
@@ -402,7 +443,7 @@ void ECUDefinition::parseControllerCommands(QTextStream &in) {
         QString line = in.readLine().trimmed();
         
         if (line.isEmpty() || line.startsWith(";")) continue;
-        if (line.startsWith("[")) return;
+        if (line.startsWith("[")) return; // Next section — main loop handles it
         if (line.startsWith("#")) {
             processDirective(line);
             continue;
@@ -518,7 +559,7 @@ ECUDefinition::BitField ECUDefinition::parseBitField(const QString &shapeStr, co
     return bf;
 }
 
-int ECUDefinition::getTypeSize(const QString &type) {
+int ECUDefinition::getTypeSize(const QString &type) const {
     if (type == "U08" || type == "S08") return 1;
     if (type == "U16" || type == "S16") return 2;
     if (type == "U32" || type == "S32" || type == "F32") return 4;
@@ -981,15 +1022,12 @@ void ECUDefinition::parseTableEditor(QTextStream &in) {
     bool inTable = false;
 
     while (!in.atEnd()) {
-        qint64 currentPos = in.pos();
         QString rawLine = in.readLine();
         QString line = rawLine.trimmed();
         
         if (line.isEmpty() || line.startsWith(";")) continue;
         if (line.startsWith("[")) {
-            // Unget / Seek back
-            in.seek(currentPos);
-            break;
+            break; // Next section — main loop handles it
         }
 
         if (line.startsWith("#")) {
@@ -1051,7 +1089,45 @@ void ECUDefinition::parseTableEditor(QTextStream &in) {
     }
 }
 
+// ============================================================================
+//  Signature Validation — Safety Gate for ECU Write Operations
+// ============================================================================
 
+ECUDefinition::SignatureValidation ECUDefinition::validateSignature(const ECUSignature &receivedSig) const {
+    // If no definition signature has been loaded, allow any signature
+    // (backward compatibility for simple use cases)
+    if (m_signature.isEmpty()) {
+        return SignatureValidation(true, "No definition signature constraint configured");
+    }
+    
+    // Check protocol version first
+    if (receivedSig.protocolVersion != 2) {
+        return SignatureValidation(false, 
+            QString("Protocol version mismatch: expected v2, got v%1")
+                .arg(receivedSig.protocolVersion));
+    }
+    
+    // Check firmware version string matches definition signature
+    // Definition signature format: "Speeduino YYYY.MM or similar"
+    // Received format: "Speeduino 2025.01" from ECU
+    if (!receivedSig.firmwareVersion.contains(m_signature, Qt::CaseInsensitive)) {
+        return SignatureValidation(false,
+            QString("Firmware mismatch: definition expects '%1', ECU reports '%2'")
+                .arg(m_signature)
+                .arg(receivedSig.firmwareVersion));
+    }
+    
+    // Check page count
+    if (receivedSig.pageCount != 15) {
+        return SignatureValidation(false,
+            QString("Page count mismatch: Speeduino expects 15 pages, got %1")
+                .arg(receivedSig.pageCount));
+    }
+    
+    // Validation passed
+    return SignatureValidation(true,
+        QString("Signature validated: %1").arg(receivedSig.toString()));
+}
 
 
 #undef MAKE_CONSTANT

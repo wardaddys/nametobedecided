@@ -76,6 +76,23 @@ MainWindow::MainWindow(QWidget *parent)
           &MainWindow::updateRealtimeData);
   connect(m_serialManager, &SerialManager::connectionStatusChanged, this,
           &MainWindow::onConnectionStatusChanged);
+    connect(m_serialManager, &SerialManager::error, this,
+      &MainWindow::onError);
+    connect(m_serialManager, &SerialManager::disconnected, this,
+      &MainWindow::onDisconnected);
+    connect(m_serialManager, &SerialManager::signatureValidationFailed,
+      this, [this](const QString &reason) {
+        QMessageBox::critical(
+      this,
+      "ECU Signature Mismatch",
+      "The connected ECU firmware signature does not match the loaded definition.\n\n"
+      "Writes and burns were blocked for safety.\n\n"
+      "Details: " + reason +
+      "\n\nLoad the correct project/definition before reconnecting.");
+      });
+
+    connect(m_ecuSettingsManager, &ECUSettingsManager::errorOccurred,
+      this, &MainWindow::onEcuSettingsError);
 
   // Connect Logging Manager
   connect(m_serialManager, &SerialManager::dataReceived, m_loggingManager,
@@ -594,6 +611,36 @@ void MainWindow::onError(const QString &error) {
   if (statusBar()) {
     statusBar()->showMessage("Error: " + error, 5000);
   }
+}
+
+void MainWindow::onEcuSettingsError(const QString &error) {
+  Logger::error("ECU settings error: " + error);
+
+  if (statusBar()) {
+    statusBar()->showMessage("ECU Settings Error: " + error, 6000);
+  }
+
+  if (error.contains("No ECU definition loaded", Qt::CaseInsensitive)) {
+    QMessageBox::warning(
+        this,
+        "Definition Required",
+        "ECU operations were blocked because no definition is loaded.\n\n"
+        "Open a valid TunerStudio project before reading/writing ECU settings.\n\n"
+        "Details: " + error);
+    return;
+  }
+
+  if (error.contains("guardrail", Qt::CaseInsensitive) ||
+      error.contains("blocked", Qt::CaseInsensitive)) {
+    QMessageBox::critical(
+        this,
+        "Safety Guardrail Triggered",
+        "A safety guardrail blocked this ECU operation to prevent invalid writes.\n\n"
+        "Details: " + error);
+    return;
+  }
+
+  QMessageBox::warning(this, "ECU Settings Error", error);
 }
 
 // === Section 2.4: Disconnection handling ===

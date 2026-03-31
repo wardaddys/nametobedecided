@@ -8,11 +8,13 @@
 #include "../utils/Logger.h"
 #include <QDebug>
 #include <QRegularExpression>
+#include <cstring>  // memcpy for F32 IEEE 754 conversion
 
 ECUSettingsManager::ECUSettingsManager(QObject *parent)
     : QObject(parent)
     , m_serialManager(nullptr)
     , m_isLoaded(false)
+    , m_definitionLoaded(false)
     , m_pagesRequested(0)
     , m_pagesReceived(0)
     , m_isVerifyingBurn(false)
@@ -48,8 +50,201 @@ ECUSettingsManager::ECUSettingsManager(QObject *parent)
 ECUSettingsManager::~ECUSettingsManager() {}
 
 void ECUSettingsManager::initializeSettings() {
-    m_definitions = ECUDefinition::getDefaultSpeeduinoConstants();
-    Logger::info("Loaded " + QString::number(m_definitions.size()) + " setting definitions");
+    m_definitions.clear();
+    m_tableDefinitions.clear();
+    m_values.clear();
+    m_tableData.clear();
+    m_definitionLoaded = false;
+    Logger::info("ECUSettingsManager initialized without active definition. Waiting for runtime INI load.");
+}
+
+bool ECUSettingsManager::hasDefinitionLoaded() const {
+    return m_definitionLoaded && !m_definitions.isEmpty();
+}
+
+int ECUSettingsManager::pageSizeFor(quint8 page) const {
+    const auto &pages = m_ecuDef.getPages();
+    if (pages.contains(page) && pages.value(page).size > 0) {
+        return pages.value(page).size;
+    }
+
+    // Safe fallback for Speeduino page map when INI page metadata is absent.
+    static const int kFallbackPageSizes[] = {
+        0, 128, 288, 288, 128, 288, 128, 240, 384, 192, 192, 288, 192, 128, 288, 256
+    };
+    if (page >= 1 && page <= 15) {
+        return kFallbackPageSizes[page];
+    }
+
+    return MAX_PAGE_SIZE;
+}
+
+int ECUSettingsManager::constantByteSize(const ECUDefinition::Constant &def) const {
+    if (def.paramClass == "bits") {
+        return 1;
+    }
+
+    if (def.type == "U08" || def.type == "S08") return 1;
+    if (def.type == "U16" || def.type == "S16") return 2;
+    if (def.type == "U32" || def.type == "S32" || def.type == "F32") return 4;
+
+    return 0;
+}
+
+bool ECUSettingsManager::validateConstantBounds(const ECUDefinition::Constant &def, QString *error) const {
+    if (def.page <= 0 || def.page >= MAX_PAGES) {
+        if (error) {
+            *error = QString("Invalid page %1 for constant '%2'").arg(def.page).arg(def.name);
+        }
+        return false;
+    }
+
+    const int size = constantByteSize(def);
+    if (size <= 0) {
+        if (error) {
+            *error = QString("Unsupported type '%1' for constant '%2'").arg(def.type).arg(def.name);
+        }
+        return false;
+    }
+
+    if (def.offset < 0) {
+        if (error) {
+            *error = QString("Negative offset %1 for constant '%2'").arg(def.offset).arg(def.name);
+        }
+        return false;
+    }
+
+    if (def.paramClass == "bits") {
+        if (def.bitField.lowBit < 0 || def.bitField.lowBit > 7 ||
+            def.bitField.highBit < 0 || def.bitField.highBit > 7 ||
+            def.bitField.lowBit > def.bitField.highBit) {
+            if (error) {
+                *error = QString("Invalid bit range [%1:%2] for constant '%3'")
+                             .arg(def.bitField.lowBit)
+                             .arg(def.bitField.highBit)
+                             .arg(def.name);
+            }
+            return false;
+        }
+    }
+
+    const int pageSize = pageSizeFor(static_cast<quint8>(def.page));
+    if ((def.offset + size) > pageSize) {
+        if (error) {
+            *error = QString("Out-of-bounds constant '%1': page %2 offset %3 size %4 exceeds page size %5")
+                         .arg(def.name)
+                         .arg(def.page)
+                         .arg(def.offset)
+                         .arg(size)
+                         .arg(pageSize);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool ECUSettingsManager::validateTableBounds(const ECUDefinition::Table &def, QString *error) const {
+    if (def.page <= 0 || def.page >= MAX_PAGES) {
+        if (error) {
+            *error = QString("Invalid table page %1 for '%2'").arg(def.page).arg(def.name);
+        }
+        return false;
+    }
+
+    if (def.rows <= 0 || def.cols <= 0) {
+        if (error) {
+            *error = QString("Invalid table dimensions %1x%2 for '%3'")
+                         .arg(def.rows).arg(def.cols).arg(def.name);
+        }
+        return false;
+    }
+
+    if (def.elementSize != 1 && def.elementSize != 2) {
+        if (error) {
+            *error = QString("Invalid table element size %1 for '%2'")
+                         .arg(def.elementSize).arg(def.name);
+        }
+        return false;
+    }
+
+    if (def.address < 0) {
+        if (error) {
+            *error = QString("Negative table address %1 for '%2'")
+                         .arg(def.address).arg(def.name);
+        }
+        return false;
+    }
+
+    if (qFuzzyIsNull(def.scale)) {
+        if (error) {
+            *error = QString("Invalid table scale 0 for '%1'").arg(def.name);
+        }
+        return false;
+    }
+
+    const int byteCount = def.rows * def.cols * def.elementSize;
+    const int pageSize = pageSizeFor(static_cast<quint8>(def.page));
+    if ((def.address + byteCount) > pageSize) {
+        if (error) {
+            *error = QString("Out-of-bounds table '%1': page %2 address %3 size %4 exceeds page size %5")
+                         .arg(def.name)
+                         .arg(def.page)
+                         .arg(def.address)
+                         .arg(byteCount)
+                         .arg(pageSize);
+        }
+        return false;
+    }
+
+    return true;
+}
+
+bool ECUSettingsManager::validateConstantCollisions(
+    const QMap<QString, ECUDefinition::Constant> &definitions,
+    QString *error) const {
+    struct ConstantRange {
+        int start;
+        int end;
+        QString name;
+    };
+
+    QMap<int, QList<ConstantRange>> rangesByPage;
+
+    for (auto it = definitions.constBegin(); it != definitions.constEnd(); ++it) {
+        const ECUDefinition::Constant &def = it.value();
+
+        QString validationError;
+        if (!validateConstantBounds(def, &validationError)) {
+            continue;
+        }
+
+        const int size = constantByteSize(def);
+        ConstantRange candidate{def.offset, def.offset + size - 1, def.name};
+
+        QList<ConstantRange> &pageRanges = rangesByPage[def.page];
+        for (const ConstantRange &existing : pageRanges) {
+            const bool overlaps = candidate.start <= existing.end && existing.start <= candidate.end;
+            if (overlaps) {
+                if (error) {
+                    *error = QString(
+                                 "Constant offset collision on page %1: '%2' [%3..%4] overlaps '%5' [%6..%7]")
+                                 .arg(def.page)
+                                 .arg(candidate.name)
+                                 .arg(candidate.start)
+                                 .arg(candidate.end)
+                                 .arg(existing.name)
+                                 .arg(existing.start)
+                                 .arg(existing.end);
+                }
+                return false;
+            }
+        }
+
+        pageRanges.append(candidate);
+    }
+
+    return true;
 }
 
 void ECUSettingsManager::setSerialManager(SerialManager *serialManager) {
@@ -74,7 +269,13 @@ void ECUSettingsManager::setSerialManager(SerialManager *serialManager) {
 }
 
 void ECUSettingsManager::onSerialConnected() {
-    Logger::info("ECUSettingsManager: Serial connected, reading settings...");
+    if (!hasDefinitionLoaded()) {
+        Logger::error("ECUSettingsManager: No definition loaded. Blocking ECU page reads.");
+        emit errorOccurred("No ECU definition loaded. Load a project INI before connecting.");
+        return;
+    }
+
+    Logger::info("ECUSettingsManager: Serial connected, reading settings from loaded definition...");
     readAllFromECU();
 }
 
@@ -100,6 +301,10 @@ int ECUSettingsManager::getRawValue(const QString &settingName) const {
     }
     
     const auto &def = m_definitions[settingName];
+    if (!validateConstantBounds(def)) {
+        return 0;
+    }
+
     if (!m_pageLoaded[def.page] || m_pageCache[def.page].isEmpty()) {
         return 0;
     }
@@ -162,6 +367,11 @@ void ECUSettingsManager::readAllFromECU() {
         emit errorOccurred("Not connected to ECU");
         return;
     }
+
+    if (!hasDefinitionLoaded()) {
+        emit errorOccurred("No ECU definition loaded. Cannot read ECU pages safely.");
+        return;
+    }
     
     m_pagesRequested = 0;
     m_pagesReceived = 0;
@@ -170,6 +380,11 @@ void ECUSettingsManager::readAllFromECU() {
     // Determine which pages need to be read based on settings
     QSet<quint8> pagesToRead;
     for (const auto &def : m_definitions) {
+        QString validationError;
+        if (!validateConstantBounds(def, &validationError)) {
+            Logger::warning("Skipping invalid constant during readAllFromECU: " + validationError);
+            continue;
+        }
         pagesToRead.insert(def.page);
     }
     
@@ -184,12 +399,13 @@ void ECUSettingsManager::readAllFromECU() {
 
 void ECUSettingsManager::readPageFromECU(quint8 page) {
     if (!m_serialManager) return;
+
+    if (!hasDefinitionLoaded()) {
+        Logger::error("readPageFromECU blocked: no definition loaded");
+        return;
+    }
     
-    // Use actual page sizes from protocol spec
-    static const uint16_t pageSizes[] = {
-        0, 128, 288, 288, 128, 288, 128, 240, 384, 192, 192, 288, 192, 128, 288, 256
-    };
-    int pageSize = (page >= 1 && page <= 15) ? pageSizes[page] : MAX_PAGE_SIZE;
+    int pageSize = pageSizeFor(page);
     
     // BUG-006 FIX: Use tableBlockingFactor for page reads
     int blockSize = m_serialManager->getSignature().tableBlockingFactor;
@@ -252,6 +468,11 @@ void ECUSettingsManager::onTableResponseReceived(quint8 table, quint16 offset, c
 void ECUSettingsManager::extractSettingsFromPage(quint8 page) {
     for (auto it = m_definitions.constBegin(); it != m_definitions.constEnd(); ++it) {
         if (it.value().page == page) {
+            QString validationError;
+            if (!validateConstantBounds(it.value(), &validationError)) {
+                Logger::warning("Skipping invalid constant during extraction: " + validationError);
+                continue;
+            }
             QVariant value = decodeValue(it.value(), m_pageCache[page]);
             m_values[it.key()] = value;
             emit settingChanged(it.key(), value);
@@ -271,15 +492,40 @@ QVariant ECUSettingsManager::decodeValue(const ECUDefinition::Constant &def, con
     } else if (def.type == "S08") {
         rawValue = static_cast<qint8>(pageData.at(def.offset));
     } else if (def.type == "U16" && def.offset + 1 < pageData.size()) {
-        rawValue = static_cast<quint8>(pageData.at(def.offset)) |
-                   (static_cast<quint8>(pageData.at(def.offset + 1)) << 8);  // LE: low byte first
+        rawValue = static_cast<int>(
+            static_cast<quint8>(pageData.at(def.offset)) |
+            (static_cast<quint16>(static_cast<quint8>(pageData.at(def.offset + 1))) << 8));  // LE
     } else if (def.type == "S16" && def.offset + 1 < pageData.size()) {
         rawValue = static_cast<qint16>(
             static_cast<quint8>(pageData.at(def.offset)) |
-            (static_cast<quint8>(pageData.at(def.offset + 1)) << 8));  // LE: low byte first
+            (static_cast<quint16>(static_cast<quint8>(pageData.at(def.offset + 1))) << 8));  // LE
+    } else if (def.type == "U32" && def.offset + 3 < pageData.size()) {
+        // [CRIT-4] U32 little-endian extraction
+        rawValue = static_cast<int>(
+            static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset)))
+            | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 1))) << 8)
+            | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 2))) << 16)
+            | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 3))) << 24));
+    } else if (def.type == "S32" && def.offset + 3 < pageData.size()) {
+        // [CRIT-4] S32 little-endian extraction
+        quint32 uval = static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset)))
+                     | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 1))) << 8)
+                     | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 2))) << 16)
+                     | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 3))) << 24);
+        rawValue = static_cast<qint32>(uval);
+    } else if (def.type == "F32" && def.offset + 3 < pageData.size()) {
+        // [CRIT-4] F32 IEEE 754 little-endian extraction — bypass rawToUser
+        quint32 bits = static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset)))
+                     | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 1))) << 8)
+                     | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 2))) << 16)
+                     | (static_cast<quint32>(static_cast<quint8>(pageData.at(def.offset + 3))) << 24);
+        float fval;
+        std::memcpy(&fval, &bits, sizeof(float));
+        return QVariant(static_cast<double>(fval));  // F32 already in user units
     } else if (def.paramClass == "bits") {
         quint8 byte = static_cast<quint8>(pageData.at(def.offset));
-        quint8 mask = ((1 << (def.bitField.highBit - def.bitField.lowBit + 1)) - 1) << def.bitField.lowBit;
+        quint8 mask = static_cast<quint8>(
+            ((1 << (def.bitField.highBit - def.bitField.lowBit + 1)) - 1) << def.bitField.lowBit);
         rawValue = (byte & mask) >> def.bitField.lowBit;
     }
     
@@ -293,6 +539,11 @@ void ECUSettingsManager::writeToECU(const QString &settingName) {
         emit errorOccurred("Not connected to ECU");
         return;
     }
+
+    if (!hasDefinitionLoaded()) {
+        emit errorOccurred("No ECU definition loaded. Write blocked for safety.");
+        return;
+    }
     
     if (!m_definitions.contains(settingName) || !m_values.contains(settingName)) {
         emit errorOccurred("Unknown setting: " + settingName);
@@ -300,6 +551,14 @@ void ECUSettingsManager::writeToECU(const QString &settingName) {
     }
     
     const auto &def = m_definitions[settingName];
+
+    QString validationError;
+    if (!validateConstantBounds(def, &validationError)) {
+        emit errorOccurred("Write blocked by definition guardrail: " + validationError);
+        Logger::error("Write blocked by definition guardrail: " + validationError);
+        return;
+    }
+
     QByteArray encoded = encodeValue(def, m_values[settingName]);
     
     // BUG-006 FIX: Use blockingFactor for individual setting writes
@@ -328,6 +587,18 @@ void ECUSettingsManager::writeToECU(const QString &settingName) {
 QByteArray ECUSettingsManager::encodeValue(const ECUDefinition::Constant &def, const QVariant &value) const {
     QByteArray data;
     
+    // [CRIT-4] F32 encoding path — uses memcpy, bypasses integer rawValue
+    if (def.type == "F32") {
+        float fval = static_cast<float>(value.toDouble());
+        quint32 bits;
+        std::memcpy(&bits, &fval, sizeof(float));
+        data.append(static_cast<char>(bits & 0xFF));
+        data.append(static_cast<char>((bits >> 8) & 0xFF));
+        data.append(static_cast<char>((bits >> 16) & 0xFF));
+        data.append(static_cast<char>((bits >> 24) & 0xFF));
+        return data;
+    }
+    
     int rawValue = def.userToRaw(value.toDouble());
     
     if (def.type == "U08" || def.type == "S08") {
@@ -335,6 +606,12 @@ QByteArray ECUSettingsManager::encodeValue(const ECUDefinition::Constant &def, c
     } else if (def.type == "U16" || def.type == "S16") {
         data.append(static_cast<char>(rawValue & 0xFF));         // Low byte first (LE)
         data.append(static_cast<char>((rawValue >> 8) & 0xFF));  // High byte second
+    } else if (def.type == "U32" || def.type == "S32") {
+        // [CRIT-4] U32/S32 little-endian encoding
+        data.append(static_cast<char>(rawValue & 0xFF));
+        data.append(static_cast<char>((rawValue >> 8) & 0xFF));
+        data.append(static_cast<char>((rawValue >> 16) & 0xFF));
+        data.append(static_cast<char>((rawValue >> 24) & 0xFF));
     } else if (def.paramClass == "bits") {
         // For bits, we need to read-modify-write
         quint8 currentByte = 0;
@@ -342,7 +619,8 @@ QByteArray ECUSettingsManager::encodeValue(const ECUDefinition::Constant &def, c
             currentByte = static_cast<quint8>(m_pageCache[def.page].at(def.offset));
         }
         
-        quint8 mask = ((1 << (def.bitField.highBit - def.bitField.lowBit + 1)) - 1) << def.bitField.lowBit;
+        quint8 mask = static_cast<quint8>(
+            ((1 << (def.bitField.highBit - def.bitField.lowBit + 1)) - 1) << def.bitField.lowBit);
         currentByte = (currentByte & ~mask) | ((rawValue << def.bitField.lowBit) & mask);
         data.append(static_cast<char>(currentByte));
     }
@@ -454,11 +732,9 @@ void ECUSettingsManager::onPageCRCReceived(quint8 page, uint32_t crc) {
 }
 
 void ECUSettingsManager::readTable(const QString &tableName) {
-    if (!m_tableDefinitions.contains(tableName)) {
-        // Init definitions if needed (lazy load)
-        if (m_tableDefinitions.isEmpty()) {
-             m_tableDefinitions = ECUDefinition::getDefaultSpeeduinoTables();
-        }
+    if (!m_definitionLoaded) {
+        Logger::error("Table read blocked: no runtime ECU definition loaded");
+        return;
     }
     
     if (!m_tableDefinitions.contains(tableName)) {
@@ -467,6 +743,12 @@ void ECUSettingsManager::readTable(const QString &tableName) {
     }
     
     ECUDefinition::Table table = m_tableDefinitions[tableName];
+    QString validationError;
+    if (!validateTableBounds(table, &validationError)) {
+        Logger::error("Table read blocked by definition guardrail: " + validationError);
+        return;
+    }
+
     int size = table.rows * table.cols * table.elementSize;
     
     Logger::info(QString("Reading table %1 (Page %2, Offset %3, Size %4)")
@@ -509,6 +791,11 @@ void ECUSettingsManager::writeTable(const QString &tableName, const QVector<QVec
     if (!m_tableDefinitions.contains(tableName)) return;
     
     ECUDefinition::Table def = m_tableDefinitions[tableName];
+    QString validationError;
+    if (!validateTableBounds(def, &validationError)) {
+        Logger::error("Table write blocked by definition guardrail: " + validationError);
+        return;
+    }
     
     // Validate dimensions
     if (data.size() != def.rows || (data.size() > 0 && data[0].size() != def.cols)) {
@@ -521,8 +808,8 @@ void ECUSettingsManager::writeTable(const QString &tableName, const QVector<QVec
     for (int r = 0; r < def.rows; ++r) {
         for (int c = 0; c < def.cols; ++c) {
             double userVal = data[r][c];
-            // Raw = (User / Scale) - Translate
-            double rawValDouble = (userVal - def.translate) / def.scale;
+            // [CRIT-3] Raw = (User / Scale) - Translate (TunerStudio INI spec)
+            double rawValDouble = (userVal / def.scale) - def.translate;
             int rawVal = static_cast<int>(qRound(rawValDouble));
             
             // Apply limits based on element size
@@ -564,9 +851,7 @@ void ECUSettingsManager::writeTable(const QString &tableName, const QVector<QVec
 }
 
 void ECUSettingsManager::extractTablesFromPage(quint8 page) {
-    if (m_tableDefinitions.isEmpty()) {
-         m_tableDefinitions = ECUDefinition::getDefaultSpeeduinoTables();
-    }
+    if (!m_definitionLoaded || m_tableDefinitions.isEmpty()) return;
     
     if (page >= MAX_PAGES || !m_pageLoaded[page]) return;
     const QByteArray &pageData = m_pageCache[page];
@@ -575,6 +860,12 @@ void ECUSettingsManager::extractTablesFromPage(quint8 page) {
         // Check if table is on this page
         if (it.value().page == page) {
             ECUDefinition::Table def = it.value();
+            QString validationError;
+            if (!validateTableBounds(def, &validationError)) {
+                Logger::warning("Skipping invalid table during extraction: " + validationError);
+                continue;
+            }
+
             int size = def.rows * def.cols * def.elementSize;
             
             // Allow partial pages if we have enough data for this table
@@ -624,6 +915,28 @@ bool ECUSettingsManager::loadDefinition(const QString &iniPath) {
     if (m_ecuDef.load(iniPath)) {
         m_definitions = m_ecuDef.getConstants();
         m_tableDefinitions = m_ecuDef.getTables();
+        m_definitionLoaded = !m_definitions.isEmpty();
+
+        if (!m_definitionLoaded) {
+            Logger::error("ECUSettingsManager: INI parsed but no constants were loaded");
+            return false;
+        }
+
+        QString collisionError;
+        if (!validateConstantCollisions(m_definitions, &collisionError)) {
+            Logger::error("ECUSettingsManager: Definition guardrail failed - " + collisionError);
+            emit errorOccurred(collisionError);
+            return false;
+        }
+
+        if (m_serialManager) {
+            // Keep SerialManager and ECUSettingsManager on the same authoritative definition
+            if (!m_serialManager->loadEcuDefinition(iniPath)) {
+                Logger::error("ECUSettingsManager: Failed to load definition into SerialManager");
+                return false;
+            }
+        }
+
         Logger::info(QString("ECUSettingsManager: Loaded %1 settings and %2 tables from INI")
             .arg(m_definitions.size())
             .arg(m_tableDefinitions.size()));
