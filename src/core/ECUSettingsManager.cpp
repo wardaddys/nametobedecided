@@ -14,9 +14,8 @@ ECUSettingsManager::ECUSettingsManager(QObject *parent)
     : QObject(parent)
     , m_serialManager(nullptr)
     , m_isLoaded(false)
-    , m_definitionLoaded(false)
-    , m_pagesRequested(0)
-    , m_pagesReceived(0)
+    , m_chunksRequested(0)
+    , m_chunksReceived(0)
     , m_isVerifyingBurn(false)
     , m_expectedPageCRC(0)
 {
@@ -50,12 +49,15 @@ ECUSettingsManager::ECUSettingsManager(QObject *parent)
 ECUSettingsManager::~ECUSettingsManager() {}
 
 void ECUSettingsManager::initializeSettings() {
-    m_definitions.clear();
-    m_tableDefinitions.clear();
+    // Equip static default definitions to allow Simulator/Fallback execution
+    m_definitions = ECUDefinition::getDefaultSpeeduinoConstants();
+    m_tableDefinitions = ECUDefinition::getDefaultSpeeduinoTables();
     m_values.clear();
     m_tableData.clear();
-    m_definitionLoaded = false;
-    Logger::info("ECUSettingsManager initialized without active definition. Waiting for runtime INI load.");
+    
+    // Set definition block gate to openly allow Simulator queries.
+    m_definitionLoaded = true; 
+    Logger::info("ECUSettingsManager initialized with fallback Speeduino mappings.");
 }
 
 bool ECUSettingsManager::hasDefinitionLoaded() const {
@@ -70,7 +72,7 @@ int ECUSettingsManager::pageSizeFor(quint8 page) const {
 
     // Safe fallback for Speeduino page map when INI page metadata is absent.
     static const int kFallbackPageSizes[] = {
-        0, 128, 288, 288, 128, 288, 128, 240, 384, 192, 192, 288, 192, 128, 288, 256
+        0, 768, 288, 288, 128, 288, 128, 240, 384, 288, 192, 288, 192, 128, 288, 256
     };
     if (page >= 1 && page <= 15) {
         return kFallbackPageSizes[page];
@@ -373,8 +375,8 @@ void ECUSettingsManager::readAllFromECU() {
         return;
     }
     
-    m_pagesRequested = 0;
-    m_pagesReceived = 0;
+    m_chunksRequested = 0;
+    m_chunksReceived = 0;
     m_isLoaded = false;
     
     // Determine which pages need to be read based on settings
@@ -388,7 +390,13 @@ void ECUSettingsManager::readAllFromECU() {
         pagesToRead.insert(def.page);
     }
     
-    m_pagesRequested = pagesToRead.size();
+    int blockSize = m_serialManager->getSignature().tableBlockingFactor;
+    if (blockSize <= 0 || blockSize > 256) blockSize = 121; // Safe Speeduino default
+    
+    for (quint8 page : pagesToRead) {
+        int pageSize = pageSizeFor(page);
+        m_chunksRequested += (pageSize + blockSize - 1) / blockSize;
+    }
     
     for (quint8 page : pagesToRead) {
         readPageFromECU(page);
@@ -423,22 +431,18 @@ void ECUSettingsManager::onTableResponseReceived(quint8 table, quint16 offset, c
         return;
     }
     
-    // Store page data
-    if (offset == 0) {
-        m_pageCache[table] = data;
-    } else {
-        // Append if offset != 0 (chunked read)
-        while (m_pageCache[table].size() < offset) {
-            m_pageCache[table].append('\0');
-        }
-        m_pageCache[table].replace(offset, data.size(), data);
+    // Safely insert chunk without truncating the rest of the page
+    int requiredSize = offset + data.size();
+    while (m_pageCache[table].size() < requiredSize) {
+        m_pageCache[table].append('\0');
     }
+    m_pageCache[table].replace(offset, data.size(), data);
     
     m_pageLoaded[table] = true;
-    m_pagesReceived++;
+    m_chunksReceived++;
     
-    // Log page received (using qDebug for verbose logging)
-    qDebug() << "Received page" << table << "(" << data.size() << "bytes)";
+    // Log chunk received (using qDebug for verbose logging)
+    qDebug() << "Received chunk for page" << table << "(" << data.size() << "bytes)";
     
     // Extract settings from this page
     extractSettingsFromPage(table);
@@ -447,18 +451,18 @@ void ECUSettingsManager::onTableResponseReceived(quint8 table, quint16 offset, c
     emit pageReadComplete(table);
     
     // Update progress
-    if (m_pagesRequested > 0) {
-        int progress = (m_pagesReceived * 100) / m_pagesRequested;
+    if (m_chunksRequested > 0) {
+        int progress = (m_chunksReceived * 100) / m_chunksRequested;
         emit loadProgress(progress);
         
-        if (m_pagesReceived >= m_pagesRequested) {
+        if (m_chunksReceived == m_chunksRequested && !m_isLoaded) {
             m_isLoaded = true;
             Logger::info("All settings loaded from ECU");
             
             // BUG-005 FIX: Also read core tables (VE, Ignite, AFR) on connect
-            readTable("veMap");
-            readTable("ignMap");
-            readTable("afrMap");
+            readTable("VE Table (Volumetric Efficiency)");
+            readTable("Ignition Advance Table");
+            readTable("AFR Target Table");
             
             emit readComplete();
         }
@@ -808,8 +812,8 @@ void ECUSettingsManager::writeTable(const QString &tableName, const QVector<QVec
     for (int r = 0; r < def.rows; ++r) {
         for (int c = 0; c < def.cols; ++c) {
             double userVal = data[r][c];
-            // [CRIT-3] Raw = (User / Scale) - Translate (TunerStudio INI spec)
-            double rawValDouble = (userVal / def.scale) - def.translate;
+            // [CRIT-3] Raw = (User - Translate) / Scale (TunerStudio INI spec)
+            double rawValDouble = (userVal - def.translate) / def.scale;
             int rawVal = static_cast<int>(qRound(rawValDouble));
             
             // Apply limits based on element size

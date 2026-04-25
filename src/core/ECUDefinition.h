@@ -93,14 +93,14 @@ public:
 
     /// Convert raw integer from ECU page data to user-facing double.
     double rawToUser(int rawValue) const {
-      return (static_cast<double>(rawValue) + translate) * scale;
+      return (static_cast<double>(rawValue) * scale) + translate;
     }
     
     /// Convert user-facing double to raw integer for the ECU.
     /// Uses qRound (banker's rounding) — NOT truncation — so that
     /// 34.6° with scale=1 becomes raw=35, not raw=34.
     int userToRaw(double userValue) const {
-      return rawClamp(qRound((userValue / scale) - translate));
+      return rawClamp(qRound((userValue - translate) / scale));
     }
     
     /// Clamp a raw value to the valid range for this constant's wire type.

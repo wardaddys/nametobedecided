@@ -204,7 +204,7 @@ QByteArray SpeeduinoProtocol::createRealTimeDataRequest() {
 
 QByteArray SpeeduinoProtocol::createSignatureRequest() {
     QByteArray cmd;
-    cmd.append(SpeeduinoCommands::CMD_SIGNATURE); // 'S'
+    cmd.append(SpeeduinoCommands::CMD_CODE_VERSION); // 'Q' — firmware new-protocol handler
     return cmd;
 }
 

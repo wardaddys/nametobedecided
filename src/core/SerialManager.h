@@ -136,7 +136,6 @@ private:
 
     // Protocol state
     uint8_t m_lastSecl;               ///< Last secl value (for restart detection)
-    bool m_useNewProtocol;            ///< True = use new-protocol framing
 
     // Statistics
     int m_packetsSent;

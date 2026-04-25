@@ -24,6 +24,7 @@
 #include "widgets/LoggingWidget.h"
 #include "widgets/SettingsDropdown.h"
 #include "widgets/ToothLoggerWidget.h"
+#include "dialogs/ConnectionDialog.h"
 #include <QFileDialog>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -476,11 +477,17 @@ void MainWindow::onConnectClicked() {
     return;
   }
 
-  // Attempt connection
+  // Show port selection dialog
   auto ports = m_serialManager->detectDevices();
   if (!ports.isEmpty()) {
-      if (m_serialManager->connectToDevice(ports.first().portName())) {
-          // updateConnectionUI will be called via onConnectionStatusChanged signal
+      ConnectionDialog dialog(this);
+      if (dialog.exec() == QDialog::Accepted) {
+          QString portName = dialog.getPortName();
+          int baudRate = dialog.getBaudRate();
+          if (!portName.isEmpty()) {
+              m_serialManager->connectToDevice(portName, baudRate);
+              // updateConnectionUI will be called via onConnectionStatusChanged signal
+          }
       }
   } else {
       // No ports found - Suggest Simulation

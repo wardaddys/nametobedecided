@@ -20,7 +20,7 @@ SerialManager::SerialManager(QObject *parent)
       m_status(ConnectionStatus::Disconnected), m_awaitingResponse(false),
       m_reconnectAttempts(0), m_maxReconnectAttempts(10),
       m_isPolling(false), m_pollingInterval(50),
-      m_lastSecl(0), m_useNewProtocol(true),
+      m_lastSecl(0),
       m_packetsSent(0), m_packetsReceived(0), m_crcErrors(0) {
 
     m_heartbeatTimer = new QTimer(this);
@@ -123,25 +123,28 @@ bool SerialManager::connectToDevice(const QString &portName, qint32 baudRate) {
         emit connectionStatusChanged(m_status);
         Logger::info("Serial port opened: " + portName);
 
-        // ===== BUG-003 FIX: DTR reset byte handling =====
+        // ===== BUG-003 FIX: DTR reset byte handling (async) =====
         // Windows sends 0xF0 as the first byte on port open.
         // Firmware discards it when serialStatusFlag == SERIAL_INACTIVE.
-        // We must wait 500ms then flush any received bytes.
-        QThread::msleep(ProtocolTiming::DTR_SETTLE_MS);
-        if (m_serialPort->bytesAvailable() > 0) {
-            QByteArray discarded = m_serialPort->readAll();
-            Logger::info("Discarded " + QString::number(discarded.size()) +
-                         " DTR settle bytes");
-        }
+        // Wait 500ms then flush any received bytes, WITHOUT blocking UI.
+        QTimer::singleShot(ProtocolTiming::DTR_SETTLE_MS, this, [this]() {
+            if (!m_serialPort->isOpen()) return; // Port closed during wait
 
-        // Start connection handshake: send signature request
-        SerialCommand cmd;
-        cmd.data = m_protocol->createSignatureRequest();
-        cmd.type = CommandType::Signature;
-        cmd.expectedResponse = -1; // Variable-length signature
-        cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
-        cmd.retryCount = ProtocolTiming::RETRY_COUNT;
-        queueCommand(cmd);
+            if (m_serialPort->bytesAvailable() > 0) {
+                QByteArray discarded = m_serialPort->readAll();
+                Logger::info("Discarded " + QString::number(discarded.size()) +
+                             " DTR settle bytes");
+            }
+
+            // Start connection handshake: send code version request ('Q')
+            SerialCommand cmd;
+            cmd.data = m_protocol->createSignatureRequest(); // Now produces 'Q'
+            cmd.type = CommandType::Signature;
+            cmd.expectedResponse = -1;
+            cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
+            cmd.retryCount = ProtocolTiming::RETRY_COUNT;
+            queueCommand(cmd);
+        });
 
         return true;
     } else {
@@ -709,19 +712,20 @@ void SerialManager::processResponse(const QByteArray &payload) {
                     return;
                 }
                 
-                // Signature validated
+                // Signature validated — store it, then query capabilities
                 Logger::info("Signature validation passed: " + validation.message);
                 m_signatureValidated = true;
                 m_signature = sig;
-                m_status = ConnectionStatus::Connected;
-                emit connectionStatusChanged(m_status);
-                emit connected(m_signature);
-                Logger::info("Connected to ECU: " + sig.toString());
+                Logger::info("Signature OK: " + sig.toString() + " — querying capabilities...");
 
-                if (m_isPolling) {
-                    m_dataPollingTimer->start(m_pollingInterval);
-                }
-                m_heartbeatTimer->start();
+                // Queue 'f' capabilities request before marking connected
+                SerialCommand capCmd;
+                capCmd.data = m_protocol->createCapabilitiesRequest(); // 'f'
+                capCmd.type = CommandType::Capabilities;
+                capCmd.expectedResponse = -1;
+                capCmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
+                capCmd.retryCount = ProtocolTiming::RETRY_COUNT;
+                queueCommand(capCmd);
             } else {
                 Logger::error("Invalid ECU signature");
                 disconnectFromDevice();
@@ -776,6 +780,48 @@ void SerialManager::processResponse(const QByteArray &payload) {
             break;
         }
 
+        case CommandType::Capabilities: {
+            // Payload: [RC_OK] [proto_ver 1B] [blockingFactor 2B BE] [tableBlockingFactor 2B BE]
+            QByteArray capData = payload;
+            if (!capData.isEmpty() && static_cast<uint8_t>(capData.at(0)) == SpeeduinoRC::RC_OK) {
+                capData = capData.mid(1);
+            }
+            if (capData.size() >= 5) {
+                m_signature.protocolVersion = static_cast<uint8_t>(capData.at(0));
+                m_signature.blockingFactor = (static_cast<uint8_t>(capData.at(1)) << 8) |
+                                              static_cast<uint8_t>(capData.at(2));
+                m_signature.tableBlockingFactor = (static_cast<uint8_t>(capData.at(3)) << 8) |
+                                                  static_cast<uint8_t>(capData.at(4));
+                Logger::info("Capabilities: proto=" + QString::number(m_signature.protocolVersion) +
+                             " blockFactor=" + QString::number(m_signature.blockingFactor) +
+                             " tableBlockFactor=" + QString::number(m_signature.tableBlockingFactor));
+            } else {
+                Logger::warning("Capabilities response too short (" + QString::number(capData.size()) +
+                                " bytes), using defaults");
+                m_signature.protocolVersion = 2;
+                m_signature.blockingFactor = 251;
+                m_signature.tableBlockingFactor = 256;
+            }
+
+            // NOW mark connection as fully established
+            m_status = ConnectionStatus::Connected;
+            emit connectionStatusChanged(m_status);
+            emit connected(m_signature);
+            Logger::info("Connected to ECU: " + m_signature.toString());
+
+            if (m_isPolling) {
+                m_dataPollingTimer->start(m_pollingInterval);
+            }
+            m_heartbeatTimer->start();
+            break;
+        }
+
+        case CommandType::TestComms: {
+            // Heartbeat response: [RC_OK, 0xFF] — just acknowledge
+            Logger::info("Heartbeat acknowledged");
+            break;
+        }
+
         default: {
             // Unknown command type — emit as generic table response for backward compat
             emit tableResponseReceived(0, 0, payload);
@@ -792,8 +838,8 @@ void SerialManager::sendHeartbeat() {
     if (!m_isPolling) {
         if (m_commandQueue.isEmpty() && !m_awaitingResponse) {
             SerialCommand cmd;
-            cmd.data = m_protocol->createSignatureRequest();
-            cmd.type = CommandType::Signature;
+            cmd.data = m_protocol->createTestCommsRequest(); // 'C' test comms
+            cmd.type = CommandType::TestComms;
             cmd.expectedResponse = -1;
             cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
             cmd.retryCount = 0;

@@ -212,8 +212,8 @@ private:
     bool m_pageLoaded[MAX_PAGES];                // Pages successfully read
     bool m_isLoaded;
     bool m_definitionLoaded;
-    int m_pagesRequested;
-    int m_pagesReceived;
+    int m_chunksRequested;
+    int m_chunksReceived;
     
     QTimer *m_burnDelayTimer;                    // Delay burn after writes
     QTimer *m_burnVerifyTimeoutTimer;            // Timeout for burn verification
