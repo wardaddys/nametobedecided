@@ -69,8 +69,8 @@ void ECUSettingsManagerGuardrailsTest::validateConstantBounds_rejectsOutOfBounds
   def.name = "overflow";
   def.paramClass = "scalar";
   def.type = "U16";
-  def.page = 1;
-  def.offset = 127; // page 1 fallback size is 128, U16 needs 2 bytes
+  def.page = 4;
+  def.offset = 127; // page 4 fallback size is 128, U16 needs 2 bytes
 
   QString error;
   QVERIFY(!mgr.validateConstantBounds(def, &error));
@@ -215,7 +215,7 @@ void ECUSettingsManagerGuardrailsTest::validateTableBounds_rejectsOutOfBoundsAdd
   ECUSettingsManager mgr;
   ECUDefinition::Table table;
   table.name = "overflowTable";
-  table.page = 1;   // fallback size 128
+  table.page = 4;   // fallback size 128
   table.address = 120;
   table.rows = 4;
   table.cols = 4;

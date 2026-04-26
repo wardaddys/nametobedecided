@@ -33,7 +33,7 @@ MainWindow::MainWindow(QWidget *parent)
       m_settingsDropdown(nullptr),
       m_liveTuningEnabled(false) {
   // === Section 7.1: Fix window title ===
-  setWindowTitle("TunerPro — Open-Source ECU Tuning");
+  setWindowTitle("TunerStudio OS — Open-Source ECU Tuning");
   resize(1280, 800);
   
   // Set frameless window hint for custom titlebar
@@ -158,7 +158,7 @@ void MainWindow::setupUi() {
   titleLayout->setContentsMargins(16, 0, 16, 0);
   titleLayout->setSpacing(8);
 
-  QLabel *appNameLabel = new QLabel("TunerPro", this);
+  QLabel *appNameLabel = new QLabel("TunerStudio OS", this);
   appNameLabel->setObjectName("TitleBarAppName");
   
   QLabel *projectNamePill = new QLabel("No Project", this);
@@ -296,7 +296,7 @@ void MainWindow::setupUi() {
 
   // 4. Menus
   QMenu *helpMenu = menuBar()->addMenu("Help");
-  QAction *aboutAct = helpMenu->addAction("About TunerPro");
+  QAction *aboutAct = helpMenu->addAction("About TunerStudio OS");
   connect(aboutAct, &QAction::triggered, this, &MainWindow::onAboutClicked);
 
   QAction *updateAct = helpMenu->addAction("Check for Updates...");
@@ -586,8 +586,8 @@ void MainWindow::onDisconnectClicked() {
 }
 
 void MainWindow::onAboutClicked() {
-  QMessageBox::about(this, "About TunerPro",
-                     "TunerPro Version 2.0\n\nOpen-source tuning software for Speeduino ECU.");
+  QMessageBox::about(this, "About TunerStudio OS",
+                     "TunerStudio OS Version 2.0\n\nOpen-source tuning software for Speeduino ECU.");
 }
 
 // === Section 2.3: Demo Mode ===
@@ -692,7 +692,7 @@ void MainWindow::onUpdateAvailable(const QString& latestVersion, const QString& 
         // if we want to mimic a simple check
     }
     QMessageBox::StandardButton reply = QMessageBox::question(this, "Update Available",
-        QString("A new version of TunerPro (v%1) is available.\nWould you like to download it now?").arg(latestVersion),
+        QString("A new version of TunerStudio OS (v%1) is available.\nWould you like to download it now?").arg(latestVersion),
         QMessageBox::Yes | QMessageBox::No);
     
     if (reply == QMessageBox::Yes) {
@@ -702,7 +702,7 @@ void MainWindow::onUpdateAvailable(const QString& latestVersion, const QString& 
 
 void MainWindow::onUpToDate(bool silentMode) {
     if (!silentMode) {
-        QMessageBox::information(this, "Up to Date", "You are running the latest version of TunerPro.");
+        QMessageBox::information(this, "Up to Date", "You are running the latest version of TunerStudio OS.");
     }
 }
 

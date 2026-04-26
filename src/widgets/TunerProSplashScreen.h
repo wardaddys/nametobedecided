@@ -4,7 +4,8 @@
 #include <QSplashScreen>
 #include <QPropertyAnimation>
 #include <QTimer>
-#include <QPushButton>
+#include <QToolButton>
+#include <QStringList>
 
 class TunerProSplashScreen : public QSplashScreen {
     Q_OBJECT
@@ -24,6 +25,7 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void onTick();
@@ -36,9 +38,17 @@ private:
     QStringList m_messages;
     QTimer m_animTimer;
     QTimer m_msgTimer;
-    QPushButton *btn1;
-    QPushButton *btn2;
-    QPushButton *btn3;
+    QToolButton *btn1;
+    QToolButton *btn2;
+    QToolButton *btn3;
+    
+    bool m_hoverBtn1 = false;
+    bool m_hoverBtn2 = false;
+    bool m_hoverBtn3 = false;
+    
+    QPixmap m_bgImage;
+    QPixmap m_logoImage;
+    QPixmap m_welcomeImage;
 };
 
 #endif // TUNERPROSPLASHSCREEN_H

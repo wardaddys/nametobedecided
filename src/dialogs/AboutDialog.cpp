@@ -11,17 +11,17 @@
 #include "AboutDialog.h"
 
 AboutDialog::AboutDialog(QWidget *parent) : QDialog(parent) {
-    setWindowTitle("About TunerPro");
+    setWindowTitle("About TunerStudio OS");
     setFixedSize(400, 300);
     
     QVBoxLayout *layout = new QVBoxLayout(this);
     
-    QLabel *titleLabel = new QLabel("TunerPro", this);
+    QLabel *titleLabel = new QLabel("TunerStudio OS", this);
     titleLabel->setStyleSheet("font-size: 24px; font-weight: bold; color: #00BCD4;");
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
     
-    QLabel *versionLabel = new QLabel("Version 1.0.0-alpha", this);
+    QLabel *versionLabel = new QLabel("Version 2.0.0-alpha", this);
     versionLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(versionLabel);
     

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(TunerPro VERSION 1.0.0 LANGUAGES CXX)
+project(TunerStudio_OS VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -187,24 +187,24 @@ install(TARGETS ${PROJECT_NAME}
 # We'll rely on CPack to bundle the install tree.
 
 # CPack Configuration
-set(CPACK_PACKAGE_NAME "TunerPro-V2")
-set(CPACK_PACKAGE_VENDOR "TunerPro Team")
+set(CPACK_PACKAGE_NAME "TunerStudio_OS-V2")
+set(CPACK_PACKAGE_VENDOR "TunerStudio Team")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Professional ECU Tuning Application for Speeduino")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "TunerPro-V2")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "TunerStudio_OS-V2")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 
 # NSIS Specifics
 set(CPACK_GENERATOR "NSIS")
-set(CPACK_NSIS_DISPLAY_NAME "TunerPro V2")
-set(CPACK_NSIS_PACKAGE_NAME "TunerPro V2")
-set(CPACK_NSIS_HELP_LINK "https://github.com/tunerpro/tunerpro-v2")
-set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/tunerpro/tunerpro-v2")
+set(CPACK_NSIS_DISPLAY_NAME "TunerStudio OS V2")
+set(CPACK_NSIS_PACKAGE_NAME "TunerStudio OS V2")
+set(CPACK_NSIS_HELP_LINK "https://github.com/tunerstudio")
+set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/tunerstudio")
 set(CPACK_NSIS_CHASSIS_DESCRIPTION "A professional ECU tuning application for Speeduino.")
 
 # Desktop shortcut and Start Menu
-set(CPACK_NSIS_CREATE_ICONS_EXTRA "CreateShortCut '$DESKTOP\\TunerPro V2.lnk' '$INSTDIR\\TunerPro.exe'")
-set(CPACK_NSIS_DELETE_ICONS_EXTRA "Delete '$DESKTOP\\TunerPro V2.lnk'")
+set(CPACK_NSIS_CREATE_ICONS_EXTRA "CreateShortCut '$DESKTOP\\TunerStudio OS V2.lnk' '$INSTDIR\\TunerStudio_OS.exe'")
+set(CPACK_NSIS_DELETE_ICONS_EXTRA "Delete '$DESKTOP\\TunerStudio OS V2.lnk'")
 
 include(CPack)
 

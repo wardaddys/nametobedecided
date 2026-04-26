@@ -88,15 +88,15 @@ int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
 
   // Set application metadata (used for QSettings organization)
-  QApplication::setOrganizationName("TunerProTeam");
-  QApplication::setOrganizationDomain("tunerpro.org");
-  QApplication::setApplicationName("TunerPro");
-  QApplication::setApplicationVersion("1.0.0-alpha");
+  QApplication::setOrganizationName("TunerStudioTeam");
+  QApplication::setOrganizationDomain("tunerstudio.org");
+  QApplication::setApplicationName("TunerStudio OS");
+  QApplication::setApplicationVersion("2.0.0-alpha");
 
   // Initialize logging system
-  Logger::initialize("TunerPro.log");
-  Logger::info("=== TunerPro ECU Tuning Application Starting ===");
-  Logger::info("Version: 1.0.0-alpha");
+  Logger::initialize("TunerStudio.log");
+  Logger::info("=== TunerStudio OS ECU Tuning Application Starting ===");
+  Logger::info("Version: 2.0.0-alpha");
   Logger::info("Build Date: " + QString(__DATE__) + " " + QString(__TIME__));
 
   // Initialize settings system
@@ -108,7 +108,7 @@ int main(int argc, char *argv[]) {
 
   // Load and apply dark theme stylesheet
   if (!loadStyleSheet(&app)) {
-    QMessageBox::warning(nullptr, "TunerPro - Warning",
+    QMessageBox::warning(nullptr, "TunerStudio OS - Warning",
                          "Failed to load stylesheet. Using default theme.");
   }
 
@@ -141,7 +141,7 @@ int main(int argc, char *argv[]) {
 
   // Create and show main window
   MainWindow mainWindow;
-  mainWindow.setWindowTitle("TunerPro - Open-Source ECU Tuning");
+  mainWindow.setWindowTitle("TunerStudio OS - Open-Source ECU Tuning");
   mainWindow.resize(1400, 900); // Initial window size
   mainWindow.show();
 
@@ -160,7 +160,7 @@ int main(int argc, char *argv[]) {
   // Cleanup before exit
   Logger::info("Application shutting down with exit code: " +
                QString::number(exitCode));
-  Logger::info("=== TunerPro Terminated ===");
+  Logger::info("=== TunerStudio OS Terminated ===");
 
   return exitCode;
 }
