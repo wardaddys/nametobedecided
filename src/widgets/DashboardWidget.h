@@ -8,6 +8,8 @@
 #include "DataGraph.h"
 #include "core/ECUData.h"
 
+class ECUSettingsManager;  // forward declaration — avoids circular include
+
 // Custom DataCard for the center grid
 class DataCard : public QFrame {
     Q_OBJECT
@@ -39,13 +41,22 @@ public:
   explicit DashboardWidget(QWidget *parent = nullptr);
   ~DashboardWidget();
 
+  /** Connect to an ECUSettingsManager so offline/MSQ scalar values are shown. */
+  void setSettingsManager(ECUSettingsManager *mgr);
+
   void updateData(const RealTimeData &data);
+
+public slots:
+  /** Receives settingChanged() from ECUSettingsManager — updates cards offline. */
+  void onSettingChanged(const QString &name, const QVariant &value);
 
 protected:
   void paintEvent(QPaintEvent *event) override;
 
 private:
   void setupUi();
+
+  ECUSettingsManager *m_settingsManager = nullptr;
 
   // Left & Right Gauges
   TunerGauge *m_rpmGauge;

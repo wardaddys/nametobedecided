@@ -182,39 +182,61 @@ void AllTablesWidget::setupUi() {
   contentLayout->setContentsMargins(20, 10, 20, 20);
   contentLayout->setSpacing(20);
 
-  // Left side - Table Container (Replacing QWidget with QSplitter for 45/55 visual split)
-  QSplitter *leftSplitter = new QSplitter(Qt::Vertical, this);
-  leftSplitter->setHandleWidth(6);
-  leftSplitter->setStyleSheet(
-      "QSplitter::handle:vertical { "
-      "  background-color: #1A2640; "
-      "  height: 6px; "
-      "  image: url(\"data:image/svg+xml;utf8,<svg width='20' height='6' xmlns='http://www.w3.org/2000/svg'><rect x='2' y='1' width='16' height='1' fill='%233D5070'/><rect x='2' y='3' width='16' height='1' fill='%233D5070'/><rect x='2' y='5' width='16' height='1' fill='%233D5070'/></svg>\");"
-      "}"
-      "QSplitter::handle:hover { background-color: #00E5C840; }"
-  );
+  // Left side: QTabWidget — Table tab gets full height, 3D Surface tab gets full height
+  m_mainViewTabs = new QTabWidget(this);
+  m_mainViewTabs->setDocumentMode(false);
+  m_mainViewTabs->setStyleSheet(
+      "QTabWidget::pane { "
+      "  border: none; "
+      "  background-color: #252525; "
+      "  border-radius: 0 8px 8px 8px; "
+      "} "
+      "QTabBar { "
+      "  background: #1E1E1E; "
+      "} "
+      "QTabBar::tab { "
+      "  background-color: #1E1E1E; "
+      "  color: #888; "
+      "  padding: 9px 22px; "
+      "  border: 1px solid #333; "
+      "  border-bottom: none; "
+      "  border-top-left-radius: 6px; "
+      "  border-top-right-radius: 6px; "
+      "  font-weight: bold; "
+      "  font-size: 12px; "
+      "  margin-right: 2px; "
+      "} "
+      "QTabBar::tab:selected { "
+      "  color: white; "
+      "  background-color: #252525; "
+      "  border-color: #444; "
+      "  border-bottom: 2px solid #00BCD4; "
+      "} "
+      "QTabBar::tab:hover:!selected { "
+      "  color: #ccc; "
+      "  background-color: #2B2B2B; "
+      "}");
 
-  QWidget *topContainer = new QWidget(leftSplitter);
-  topContainer->setMinimumHeight(280);
-  topContainer->setStyleSheet("background-color: #252525; border-radius: 8px;");
-  QVBoxLayout *topLayout = new QVBoxLayout(topContainer);
-  topLayout->setContentsMargins(15, 15, 15, 15);
-  topLayout->setSpacing(10);
+  // ── TABLE TAB ─────────────────────────────────────────────────────────────
+  QWidget *tableTab = new QWidget();
+  tableTab->setStyleSheet("background-color: #252525;");
+  QVBoxLayout *topLayout = new QVBoxLayout(tableTab);
+  topLayout->setContentsMargins(15, 12, 15, 10);
+  topLayout->setSpacing(8);
 
   // Table Info Header
-  QWidget *tableHeader = new QWidget(topContainer);
+  QWidget *tableHeader = new QWidget(tableTab);
   tableHeader->setStyleSheet("background: transparent;");
   QVBoxLayout *tableHeaderLayout = new QVBoxLayout(tableHeader);
   tableHeaderLayout->setContentsMargins(0, 0, 0, 0);
   tableHeaderLayout->setSpacing(2);
 
-  m_tableInfoLabel = new QLabel("VE Table (Volumetric Efficiency)", topContainer);
-  m_tableInfoLabel->setStyleSheet("font-weight: bold; color: white; font-size: "
-                                  "14px; background: transparent;");
+  m_tableInfoLabel = new QLabel("VE Table (Volumetric Efficiency)", tableTab);
+  m_tableInfoLabel->setStyleSheet(
+      "font-weight: bold; color: white; font-size: 14px; background: transparent;");
 
   m_tableDescLabel = new QLabel(
-      "Primary fuel calibration table - defines engine breathing efficiency",
-      topContainer);
+      "Primary fuel calibration table - defines engine breathing efficiency", tableTab);
   m_tableDescLabel->setStyleSheet(
       "color: #AAA; font-size: 11px; background: transparent;");
 
@@ -228,20 +250,13 @@ void AllTablesWidget::setupUi() {
   m_camProfileTabs->setStyleSheet(
       "QTabWidget::pane { border: none; background: transparent; } "
       "QTabBar::tab { "
-      "  background-color: transparent; "
-      "  color: #888; "
-      "  padding: 10px 20px; "
-      "  border: none; "
-      "  border-bottom: 2px solid transparent; "
-      "  font-weight: bold; "
+      "  background-color: transparent; color: #888; "
+      "  padding: 8px 18px; border: none; "
+      "  border-bottom: 2px solid transparent; font-weight: bold; "
       "} "
-      "QTabBar::tab:selected { "
-      "  color: white; "
-      "  border-bottom: 2px solid #00BCD4; "
-      "} "
+      "QTabBar::tab:selected { color: white; border-bottom: 2px solid #00BCD4; } "
       "QTabBar::tab:hover { color: #ccc; }");
 
-  // Create editors for each cam profile
   m_lowCamEditor = new TableEditor(this);
   connect(m_lowCamEditor, &TableEditor::dataChanged, this,
           &AllTablesWidget::onTableDataChanged);
@@ -252,32 +267,27 @@ void AllTablesWidget::setupUi() {
 
   m_camProfileTabs->addTab(m_lowCamEditor, "Low Cam Profile");
   m_camProfileTabs->addTab(m_highCamEditor, "High Cam Profile");
-
   topLayout->addWidget(m_camProfileTabs);
 
-  // Main Table Editor (non-VTEC mode fallback)
-  m_tableEditor = new TableEditor(topContainer);
+  // Main Table Editor (non-VTEC mode)
+  m_tableEditor = new TableEditor(tableTab);
   connect(m_tableEditor, &TableEditor::dataChanged, this,
           &AllTablesWidget::onTableDataChanged);
-  m_tableEditor->setVisible(false); // Hidden when VTEC mode is active
+  m_tableEditor->setVisible(false);
   m_tableEditor->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   topLayout->addWidget(m_tableEditor);
 
-  m_colorLegendBar = new ColorLegendBar(topContainer);
+  m_colorLegendBar = new ColorLegendBar(tableTab);
   topLayout->addWidget(m_colorLegendBar);
 
-  // Setup 3D Graph
+  // ── 3D SURFACE TAB ────────────────────────────────────────────────────────
   setup3DGraph();
-  m_graphContainer->setParent(leftSplitter);
-  
-  leftSplitter->addWidget(topContainer);
-  leftSplitter->addWidget(m_graphContainer);
-  
-  // 45 / 55 Split
-  leftSplitter->setStretchFactor(0, 45);
-  leftSplitter->setStretchFactor(1, 55);
 
-  contentLayout->addWidget(leftSplitter, 1);
+  // Assemble tabs
+  m_mainViewTabs->addTab(tableTab, "  Table");
+  m_mainViewTabs->addTab(m_graphContainer, "  3D Surface");
+
+  contentLayout->addWidget(m_mainViewTabs, 1);
 
   // Right side - Control Panel
   QWidget *rightPanel = createRightControlPanel();
@@ -606,13 +616,22 @@ void AllTablesWidget::onTableDataReceived(const QString &tableName, const QVecto
     int rows = data.size();
     int cols = rows > 0 ? data[0].size() : 0;
     
-    // FIX-011: Use typical Speeduino default axis bins for 16x16 tables
+    // T3: Provide real-world axis bin labels for common Speeduino table sizes
     if (rows == 16 && cols == 16) {
         xHeaders = {"500","700","1000","1500","2000","2500","3000","3500",
                      "4000","4500","5000","5500","6000","6500","7000","8000"};
         yHeaders = {"20","26","32","38","44","50","58","66",
                      "74","82","90","98","106","114","130","160"};
+    } else if (rows == 12 && cols == 12) {
+        xHeaders = {"500","1000","1500","2000","2500","3000",
+                     "3500","4000","5000","6000","7000","8000"};
+        yHeaders = {"20","30","40","50","60","70",
+                     "80","90","100","110","130","160"};
+    } else if (rows == 8 && cols == 8) {
+        xHeaders = {"500","1000","2000","3000","4000","5000","6000","7000"};
+        yHeaders = {"20","40","60","80","100","120","140","160"};
     } else {
+        // Fallback: generic numeric indices
         for (int i = 0; i < cols; ++i) xHeaders << QString::number(i);
         for (int i = 0; i < rows; ++i) yHeaders << QString::number(i);
     }
@@ -624,6 +643,9 @@ void AllTablesWidget::onTableDataReceived(const QString &tableName, const QVecto
     } else {
         m_tableEditor->setTableData(data, xHeaders, yHeaders);
     }
+
+    // Pass axis labels to 3D graph for tick marks
+    m_graphContainer->setAxisLabels(xHeaders, yHeaders);
     
     m_tableInfoLabel->setText(QString("%1 (%2x%3)").arg(tableName).arg(cols).arg(rows));
     
@@ -692,8 +714,28 @@ void AllTablesWidget::onTableSelectionChanged(int index) {
 }
 
 void AllTablesWidget::onSearchTextChanged(const QString &text) {
-  // Filter dropdown items based on search
-  Q_UNUSED(text);
+  // T5: filter the table selector combo in real-time
+  // Save full list on first call
+  if (m_allTableNames.isEmpty()) {
+    for (int i = 0; i < m_tableSelector->count(); ++i)
+      m_allTableNames << m_tableSelector->itemText(i);
+  }
+
+  m_tableSelector->blockSignals(true);
+  m_tableSelector->clear();
+
+  if (text.trimmed().isEmpty()) {
+    m_tableSelector->addItems(m_allTableNames);
+  } else {
+    for (const QString &name : m_allTableNames) {
+      if (name.contains(text, Qt::CaseInsensitive))
+        m_tableSelector->addItem(name);
+    }
+  }
+
+  m_tableSelector->blockSignals(false);
+  if (m_tableSelector->count() > 0)
+    onTableSelectionChanged(0);
 }
 
 void AllTablesWidget::onCopyTable() {

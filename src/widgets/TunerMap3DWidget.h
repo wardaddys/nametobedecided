@@ -8,56 +8,73 @@
 #include <QPointF>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QStringList>
+#include <QTimer>
 
 class TunerMap3DWidget : public QWidget {
     Q_OBJECT
 public:
     explicit TunerMap3DWidget(QWidget* parent = nullptr);
-    void setTableData(const QVector<QVector<double>>& data, double minVal, double maxVal);
 
-    // Provide a dummy method to keep AllTablesWidget happy, since it might call it
+    void setTableData(const QVector<QVector<double>>& data, double minVal, double maxVal);
     void setData(const QVector<QVector<double>>& data, double minVal, double maxVal) { setTableData(data, minVal, maxVal); }
-    void setSelectedIndex(int row, int col) {
-        // Ignored for now based on prompt implementation, but required to build with existing AllTablesWidget
-    }
+    void setAxisLabels(const QStringList& xLabels, const QStringList& zLabels);
+    void setSelectedIndex(int row, int col) { m_selRow = row; m_selCol = col; update(); }
 
 protected:
-    void paintEvent(QPaintEvent* event) override;
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
-    void wheelEvent(QWheelEvent* event) override;
-    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
+    void mouseMoveEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;
+    void wheelEvent(QWheelEvent*) override;
+    void mouseDoubleClickEvent(QMouseEvent*) override;
 
 private slots:
     void toggleSmoothMode();
     void resetView();
     void toggleSync();
+    void onAnimTick();
 
 private:
-    // Data
+    // ── Data ──────────────────────────────────────────────────────────────────
     QVector<QVector<double>> m_data;
     double m_minVal = 0.0, m_maxVal = 100.0;
     int m_rows = 0, m_cols = 0;
+    QStringList m_xLabels, m_zLabels;
 
-    // Camera state
-    float m_azimuth   = 35.0f;   // horizontal rotation degrees
-    float m_elevation = 28.0f;   // vertical rotation degrees
-    float m_zoom      = 1.0f;
+    // ── Camera ────────────────────────────────────────────────────────────────
+    float   m_azimuth   = 220.0f;
+    float   m_elevation = 30.0f;
+    float   m_zoom      = 1.0f;
     QPointF m_panOffset = {0, 0};
 
-    // Interaction
-    QPoint m_lastMousePos;
-    bool m_dragging = false;
-    bool m_smoothMode = false;
-    bool m_syncEnabled = false;
+    // ── Animation (smooth reset) ───────────────────────────────────────────────
+    QTimer* m_animTimer    = nullptr;
+    float   m_tgtAzimuth   = 220.0f;
+    float   m_tgtElevation = 30.0f;
 
-    // Internal helpers
+    // ── Interaction ───────────────────────────────────────────────────────────
+    QPoint m_lastMouse;
+    bool   m_dragging    = false;
+    bool   m_smoothMode  = false;
+    bool   m_syncEnabled = false;
+
+    // ── Selection / Hover ─────────────────────────────────────────────────────
+    int m_selRow = -1, m_selCol = -1;
+    int m_hovRow = -1, m_hovCol = -1;
+
+    struct QuadCentre { QPointF screen; int row, col; };
+    QVector<QuadCentre> m_centres; // rebuilt each paint, used for hover
+
+    // ── Projection helpers ────────────────────────────────────────────────────
     QPointF project(float x, float y, float z) const;
-    QColor cellColor(double value) const;
-    void renderSurface(QPainter& p);
-    void renderAxes(QPainter& p);
+    float   depth  (float x, float y, float z) const;
+
+    // ── Render passes ─────────────────────────────────────────────────────────
     void renderFloorGrid(QPainter& p);
+    void renderSurface  (QPainter& p);
+    void renderAxes     (QPainter& p);
+    void renderHover    (QPainter& p);
 };
 
 #endif // TUNERMAP3DWIDGET_H

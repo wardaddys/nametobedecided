@@ -5,6 +5,7 @@
 
 #include "ECUSettingsManager.h"
 #include "SerialManager.h"
+#include "Ms1ExtraNameMap.h"
 #include "../utils/Logger.h"
 #include <QDebug>
 #include <QRegularExpression>
@@ -94,9 +95,15 @@ int ECUSettingsManager::constantByteSize(const ECUDefinition::Constant &def) con
 }
 
 bool ECUSettingsManager::validateConstantBounds(const ECUDefinition::Constant &def, QString *error) const {
-    if (def.page <= 0 || def.page >= MAX_PAGES) {
+    if (def.page < 1 || def.page >= MAX_PAGES) {
         if (error) {
-            *error = QString("Invalid page %1 for constant '%2'").arg(def.page).arg(def.name);
+            // Speeduino pages start from 1. Page 0 is often used for metadata/INI info 
+            // that is NOT a real ECU setting. We only warn for pages > 0 to avoid floods.
+            if (def.page > 0) {
+                *error = QString("Invalid page %1 for constant '%2'").arg(def.page).arg(def.name);
+            } else {
+                return false; // Silently skip page 0
+            }
         }
         return false;
     }
@@ -767,7 +774,16 @@ void ECUSettingsManager::readTable(const QString &tableName) {
             m_serialManager->readTable(table.page, table.address + offset, chunkSize);
         }
     } else {
-        // Offline mode: Generate dummy data so the UI doesn't look broken
+        // Offline mode: prefer injected MSQ data over synthetic dummies.
+        // injectMsqData() populates m_tableData when a project is loaded — we
+        // must not overwrite that real data with zeroes/estimates here.
+        if (m_tableData.contains(tableName)) {
+            Logger::info("Offline mode: Re-emitting cached MSQ data for " + tableName);
+            emit tableDataReceived(tableName, m_tableData[tableName]);
+            return;
+        }
+
+        // No MSQ data available — generate dummy data so the UI isn't blank.
         Logger::info("Offline mode: Generating dummy data for " + tableName);
         QVector<QVector<double>> dummyData(table.rows, QVector<double>(table.cols, 0.0));
         
@@ -926,6 +942,24 @@ bool ECUSettingsManager::loadDefinition(const QString &iniPath) {
             return false;
         }
 
+        // Warn if the loaded INI is not a compatible Speeduino/MS2Extra firmware.
+        // We continue loading (do not block) so the user can still view tables
+        // via the name-mapping layer. The warning surfaces in the status bar and
+        // via a non-modal errorOccurred signal so MainWindow can display it.
+        if (!m_ecuDef.isSpeeduinoCompatible()) {
+            const QString sig = m_ecuDef.getSignature();
+            Logger::warning(QString("ECUSettingsManager: Non-Speeduino INI detected "
+                                    "(signature: '%1'). MSQ data injection will use "
+                                    "name-mapping — table values may be limited.")
+                            .arg(sig));
+            emit errorOccurred(
+                QString("⚠ Non-Speeduino firmware detected: \"%1\"\n\n"
+                        "This project uses an MS1/Extra (or other) firmware definition.\n"
+                        "Table data will be loaded via name mapping — VE, Ignition and AFR "
+                        "tables are supported. Other settings may show default values.")
+                .arg(sig));
+        }
+
         QString collisionError;
         if (!validateConstantCollisions(m_definitions, &collisionError)) {
             Logger::error("ECUSettingsManager: Definition guardrail failed - " + collisionError);
@@ -951,10 +985,35 @@ bool ECUSettingsManager::loadDefinition(const QString &iniPath) {
 }
 
 void ECUSettingsManager::injectMsqData(const QMap<QString, QString> &constants) {
+    // Detect whether the loaded INI is MS1/Extra so we can apply the name-mapping
+    // layer before trying to match against m_definitions / m_tableDefinitions.
+    const bool isMs1 = Ms1ExtraNameMap::isMs1ExtraSignature(m_ecuDef.getSignature());
+
+    int injectedScalars = 0;
+    int injectedTables  = 0;
+
     for (auto it = constants.constBegin(); it != constants.constEnd(); ++it) {
         QString name = it.key();
         QString valStr = it.value();
-        
+
+        // --- MS1/Extra name translation -----------------------------------------
+        if (isMs1) {
+            // Try table name mapping first
+            QString mappedTable = Ms1ExtraNameMap::toInternalTableName(name);
+            if (!mappedTable.isEmpty()) {
+                name = mappedTable;  // Will be matched by the table branch below
+            } else {
+                // Try scalar/constant name mapping
+                QString mappedConst = Ms1ExtraNameMap::toInternalConstantName(name);
+                if (!mappedConst.isEmpty()) {
+                    name = mappedConst;  // Will be matched by the scalar branch below
+                }
+                // If neither map has it, fall through — the name might already be
+                // compatible (e.g. pcVariables) or it will simply be silently skipped.
+            }
+        }
+        // ------------------------------------------------------------------------
+
         if (m_definitions.contains(name)) {
             // It's a scalar or bit
             bool ok;
@@ -962,9 +1021,10 @@ void ECUSettingsManager::injectMsqData(const QMap<QString, QString> &constants) 
             if (ok) {
                 m_values[name] = val;
                 emit settingChanged(name, val);
+                ++injectedScalars;
             }
         } else if (m_tableDefinitions.contains(name)) {
-            // It's a table, valStr holds a grid of numbers separated by whitespace
+            // It's a table — valStr holds a grid of numbers separated by whitespace
             ECUDefinition::Table tableDef = m_tableDefinitions[name];
             QStringList tokens = valStr.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
             if (tokens.size() >= tableDef.rows * tableDef.cols) {
@@ -977,8 +1037,15 @@ void ECUSettingsManager::injectMsqData(const QMap<QString, QString> &constants) 
                 }
                 m_tableData[name] = tableData;
                 emit tableDataReceived(name, tableData);
+                ++injectedTables;
+            } else {
+                Logger::warning(QString("ECUSettingsManager: Table '%1' token count %2 < expected %3x%4=%5 — skipped")
+                    .arg(name).arg(tokens.size())
+                    .arg(tableDef.rows).arg(tableDef.cols)
+                    .arg(tableDef.rows * tableDef.cols));
             }
         }
     }
-    Logger::info("ECUSettingsManager: Injected MSQ values into cache");
+    Logger::info(QString("ECUSettingsManager: Injected %1 scalars and %2 tables from MSQ (MS1 mapping: %3)")
+        .arg(injectedScalars).arg(injectedTables).arg(isMs1 ? "active" : "inactive"));
 }

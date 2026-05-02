@@ -14,6 +14,7 @@
 #include "SpeeduinoProtocol.h"
 #include <QObject>
 #include <QQueue>
+#include <QDateTime>
 #include <QSerialPort>
 #include <QSerialPortInfo>
 #include <QTimer>
@@ -29,9 +30,11 @@ struct SerialCommand {
     int retryCount;           ///< Number of retry attempts remaining
     quint8 pageNum;           ///< Page number (for read/write/burn tracking)
     quint16 pageOffset;       ///< Offset (for page read tracking)
+    bool isRaw;               ///< True if this command should be sent WITHOUT protocol wrapping
 
     SerialCommand() : type(CommandType::Unknown), expectedResponse(-1),
-                      timeoutMs(1000), retryCount(3), pageNum(0), pageOffset(0) {}
+                      timeoutMs(1000), retryCount(3), pageNum(0), pageOffset(0),
+                      isRaw(false) {}
 };
 
 /**
@@ -101,7 +104,7 @@ private:
     void sendCommand(const QByteArray &command);
     void processResponse(const QByteArray &payload);
     void attemptReconnection();
-    void tryParseNewProtocolFrame();
+    bool tryParseNewProtocolFrame();
 
     // === Member Variables ===
     QSerialPort *m_serialPort;
@@ -136,6 +139,7 @@ private:
 
     // Protocol state
     uint8_t m_lastSecl;               ///< Last secl value (for restart detection)
+    QDateTime m_lastCommandSent;      ///< Watchdog for TX activity
 
     // Statistics
     int m_packetsSent;

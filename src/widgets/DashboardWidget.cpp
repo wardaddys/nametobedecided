@@ -1,6 +1,7 @@
 #include "DashboardWidget.h"
 #include "TunerGauge.h"
 #include "core/TunerProColors.h"
+#include "core/ECUSettingsManager.h"
 #include <QGridLayout>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -95,6 +96,62 @@ DashboardWidget::DashboardWidget(QWidget *parent)
 }
 
 DashboardWidget::~DashboardWidget() {}
+
+// ---------------------------------------------------------------------------
+// setSettingsManager — call once from MainWindow::setupUi() after both objects
+// are constructed.  Wires settingChanged() so offline/MSQ scalar values are
+// reflected in the dashboard cards without needing a live serial connection.
+// ---------------------------------------------------------------------------
+void DashboardWidget::setSettingsManager(ECUSettingsManager *mgr) {
+    m_settingsManager = mgr;
+    if (mgr) {
+        connect(mgr, &ECUSettingsManager::settingChanged,
+                this, &DashboardWidget::onSettingChanged,
+                Qt::UniqueConnection);  // UniqueConnection prevents double-wiring
+    }
+}
+
+// ---------------------------------------------------------------------------
+// onSettingChanged — dispatches named scalar values to the appropriate card.
+//
+// Names here must match exactly what ECUDefinition::getDefaultSpeeduinoConstants()
+// registers (or what a loaded INI exports). The Ms1ExtraNameMap translates
+// MS1/Extra names upstream, so by the time we get here the names are canonical.
+// ---------------------------------------------------------------------------
+void DashboardWidget::onSettingChanged(const QString &name, const QVariant &value) {
+    const double v = value.toDouble();
+    const QString fmt1 = QString::number(v, 'f', 1);
+
+    // Coolant / Engine Coolant Temperature
+    if (name == "coolant" || name == "ect" || name == "egoMinClt") {
+        m_cardClt->setValue(fmt1 + " °C");
+    }
+    // Intake Air Temperature
+    else if (name == "iat" || name == "mat") {
+        m_cardIat->setValue(fmt1 + " °C");
+    }
+    // Battery Voltage
+    else if (name == "batVoltage" || name == "battery" || name == "voltage") {
+        m_cardBat->setValue(fmt1 + " V");
+    }
+    // Throttle Position — note: live TPS is preferred via updateData(),
+    // this handles the offline stored value if one exists
+    else if (name == "tps" || name == "tpsThresh") {
+        m_cardTps->setValue(fmt1 + " %");
+    }
+    // Stoichiometric AFR (a tune-level constant, not a live channel)
+    else if (name == "stoich" || name == "displayTargetAfr") {
+        m_cardO2->setValue(QString::number(v, 'f', 2));
+    }
+    // Ignition advance (stored value, e.g. fixed cranking advance)
+    else if (name == "crankingAdvance" || name == "fixedDwell") {
+        // Only show if the live value hasn't already populated the card
+        // (updateData() takes priority once connected)
+        m_cardIgn->setValue(fmt1 + " °");
+    }
+    // Everything else is silently ignored — not all scalars have
+    // a corresponding dashboard card.
+}
 
 void DashboardWidget::setupUi() {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);

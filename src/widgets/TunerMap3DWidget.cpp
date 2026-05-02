@@ -1,12 +1,11 @@
 #include "TunerMap3DWidget.h"
 #include "TunerColorMap.h"
 #include <QPainter>
-#include <QPainterPath>
-#include <QtMath>
-#include <QVector3D>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QVector3D>
+#include <QtMath>
 #include <algorithm>
 
 TunerMap3DWidget::TunerMap3DWidget(QWidget* parent) : QWidget(parent) {
@@ -15,245 +14,329 @@ TunerMap3DWidget::TunerMap3DWidget(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    QVBoxLayout* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
+    m_animTimer = new QTimer(this);
+    m_animTimer->setInterval(16);
+    connect(m_animTimer, &QTimer::timeout, this, &TunerMap3DWidget::onAnimTick);
 
-    // We add a stretch so the toolbar sits at the bottom overlaid or just part of the widget
-    layout->addStretch();
+    QVBoxLayout* vl = new QVBoxLayout(this);
+    vl->setContentsMargins(0,0,0,0);
+    vl->addStretch();
 
-    QHBoxLayout* toolbar = new QHBoxLayout();
-    toolbar->setContentsMargins(10, 0, 10, 10);
-    
-    QPushButton* smoothFlatBtn = new QPushButton("SMOOTH / FLAT", this);
-    QPushButton* resetViewBtn = new QPushButton("RESET VIEW", this);
-    QPushButton* syncSelectionBtn = new QPushButton("SYNC WITH SELECTION", this);
+    QHBoxLayout* tb = new QHBoxLayout();
+    tb->setContentsMargins(10,0,10,10);
 
-    smoothFlatBtn->setObjectName("smoothFlatBtn");
-    resetViewBtn->setObjectName("resetViewBtn");
-    syncSelectionBtn->setObjectName("syncSelectionBtn");
-    syncSelectionBtn->setCheckable(true);
+    auto makeBtn = [&](const QString& label, const QString& id, bool checkable = false) {
+        QPushButton* b = new QPushButton(label, this);
+        b->setObjectName(id);
+        b->setCheckable(checkable);
+        b->setStyleSheet(
+            "QPushButton { background:#0F1829; color:#7A8FAD; border:1px solid #1A2640;"
+            " padding:5px 14px; font-family:'JetBrains Mono'; font-size:11px; }"
+            "QPushButton:hover { color:#00E5C8; border-color:#00E5C860; }"
+            "QPushButton:checked { background:#00E5C810; color:#00E5C8; border-color:#00E5C8; }");
+        return b;
+    };
 
-    QString btnStyle = 
-        "QPushButton#smoothFlatBtn, "
-        "QPushButton#resetViewBtn, "
-        "QPushButton#syncSelectionBtn {"
-        "    background: #0F1829;"
-        "    color: #7A8FAD;"
-        "    border: 1px solid #1A2640;"
-        "    padding: 5px 14px;"
-        "    font-family: 'JetBrains Mono', monospace;"
-        "    font-size: 11px;"
-        "    letter-spacing: 0.06em;"
-        "}"
-        "QPushButton#smoothFlatBtn:hover, "
-        "QPushButton#resetViewBtn:hover, "
-        "QPushButton#syncSelectionBtn:hover {"
-        "    color: #00E5C8;"
-        "    border-color: #00E5C860;"
-        "}"
-        "QPushButton#smoothFlatBtn:checked, "
-        "QPushButton#syncSelectionBtn:checked {"
-        "    background: #00E5C810;"
-        "    color: #00E5C8;"
-        "    border-color: #00E5C8;"
-        "}";
+    auto* smBtn   = makeBtn("SMOOTH / FLAT",      "smBtn",  true);
+    auto* rvBtn   = makeBtn("RESET VIEW",         "rvBtn",  false);
+    auto* syncBtn = makeBtn("SYNC WITH SELECTION","syncBtn",true);
 
-    smoothFlatBtn->setStyleSheet(btnStyle);
-    resetViewBtn->setStyleSheet(btnStyle);
-    syncSelectionBtn->setStyleSheet(btnStyle);
-    
-    toolbar->addWidget(smoothFlatBtn);
-    toolbar->addWidget(resetViewBtn);
-    toolbar->addWidget(syncSelectionBtn);
-    toolbar->addStretch();
+    tb->addWidget(smBtn); tb->addWidget(rvBtn); tb->addWidget(syncBtn); tb->addStretch();
+    vl->addLayout(tb);
 
-    layout->addLayout(toolbar);
-
-    connect(smoothFlatBtn, &QPushButton::clicked, this, &TunerMap3DWidget::toggleSmoothMode);
-    connect(resetViewBtn, &QPushButton::clicked, this, &TunerMap3DWidget::resetView);
-    connect(syncSelectionBtn, &QPushButton::clicked, this, &TunerMap3DWidget::toggleSync);
+    connect(smBtn,   &QPushButton::clicked, this, &TunerMap3DWidget::toggleSmoothMode);
+    connect(rvBtn,   &QPushButton::clicked, this, &TunerMap3DWidget::resetView);
+    connect(syncBtn, &QPushButton::clicked, this, &TunerMap3DWidget::toggleSync);
 }
 
-void TunerMap3DWidget::toggleSmoothMode() {
-    m_smoothMode = !m_smoothMode;
-    update();
-}
+void TunerMap3DWidget::toggleSmoothMode() { m_smoothMode = !m_smoothMode; update(); }
+void TunerMap3DWidget::toggleSync()       { m_syncEnabled = !m_syncEnabled; }
 
 void TunerMap3DWidget::resetView() {
-    m_azimuth   = 35.0f;
-    m_elevation = 28.0f;
-    m_zoom      = 1.0f;
-    m_panOffset = {0, 0};
+    m_tgtAzimuth = 220.0f; m_tgtElevation = 30.0f;
+    m_panOffset = {0,0}; m_zoom = 1.0f;
+    m_animTimer->start();
+}
+
+void TunerMap3DWidget::onAnimTick() {
+    float da = m_tgtAzimuth - m_azimuth;
+    float de = m_tgtElevation - m_elevation;
+    while (da >  180.f) da -= 360.f;
+    while (da < -180.f) da += 360.f;
+    m_azimuth   += da * 0.15f;
+    m_elevation += de * 0.15f;
+    if (qAbs(da) < 0.1f && qAbs(de) < 0.1f) {
+        m_azimuth = m_tgtAzimuth; m_elevation = m_tgtElevation;
+        m_animTimer->stop();
+    }
     update();
 }
 
-void TunerMap3DWidget::toggleSync() {
-    m_syncEnabled = !m_syncEnabled;
-}
-
-void TunerMap3DWidget::setTableData(const QVector<QVector<double>>& data, double minVal, double maxVal) {
-    m_data = data;
-    m_minVal = minVal;
-    m_maxVal = maxVal;
-    m_rows = data.size();
-    m_cols = m_rows > 0 ? data[0].size() : 0;
+void TunerMap3DWidget::setTableData(const QVector<QVector<double>>& data, double mn, double mx) {
+    m_data = data; m_minVal = mn; m_maxVal = mx;
+    m_rows = data.size(); m_cols = m_rows > 0 ? data[0].size() : 0;
+    m_hovRow = m_hovCol = -1; m_centres.clear();
     update();
 }
+
+void TunerMap3DWidget::setAxisLabels(const QStringList& x, const QStringList& z) {
+    m_xLabels = x; m_zLabels = z; update();
+}
+
+// ── Projection ───────────────────────────────────────────────────────────────
 
 QPointF TunerMap3DWidget::project(float x, float y, float z) const {
-    // Rotate by azimuth around Y axis
-    float azRad = qDegreesToRadians(m_azimuth);
-    float elRad = qDegreesToRadians(m_elevation);
-
-    float rx = x * qCos(azRad) + z * qSin(azRad);
-    float ry = y;
-    float rz = -x * qSin(azRad) + z * qCos(azRad);
-
-    // Rotate by elevation around X axis
-    float ry2 = ry * qCos(elRad) - rz * qSin(elRad);
-    float rz2 = ry * qSin(elRad) + rz * qCos(elRad);
-
-    // Perspective divide
-    float focalLength = 500.0f * m_zoom;
-    float perspective = focalLength / (focalLength + rz2 + 300.0f);
-
-    float screenX = width() / 2.0f  + rx * perspective * 18.0f + m_panOffset.x();
-    float screenY = height() / 2.0f - ry2 * perspective * 18.0f + m_panOffset.y();
-
-    return QPointF(screenX, screenY);
+    float az = qDegreesToRadians(m_azimuth);
+    float el = qDegreesToRadians(m_elevation);
+    float rx  =  x*qCos(az) + z*qSin(az);
+    float ry  =  y;
+    float rz  = -x*qSin(az) + z*qCos(az);
+    float ry2 =  ry*qCos(el) - rz*qSin(el);
+    float rz2 =  ry*qSin(el) + rz*qCos(el);
+    float fl  = 600.f * m_zoom;
+    float per = fl / (fl + rz2 + 60.f);
+    float sc  = qMin(width(), height()) * 0.78f / 20.f;
+    return { width()/2.f + rx*per*sc + m_panOffset.x(),
+             height()/2.f - ry2*per*sc + m_panOffset.y() };
 }
 
-void TunerMap3DWidget::renderSurface(QPainter& p) {
-    if (m_data.isEmpty()) return;
-
-    // Normalize coordinates so the table fits in a -10..+10 cube
-    float xScale = 20.0f / qMax(m_cols - 1, 1);
-    float zScale = 20.0f / qMax(m_rows - 1, 1);
-    float yScale = 12.0f; // height scale
-
-    // Build list of quads with their camera-space Z for sorting
-    struct Quad {
-        QPointF pts[4];
-        QColor  fill;
-        float   sortZ;
-    };
-    QVector<Quad> quads;
-    quads.reserve(m_rows * m_cols);
-
-    for (int row = 0; row < m_rows - 1; ++row) {
-        for (int col = 0; col < m_cols - 1; ++col) {
-            // 4 corners of this cell in 3D space
-            double v00 = m_data[row][col];
-            double v10 = m_data[row+1][col];
-            double v01 = m_data[row][col+1];
-            double v11 = m_data[row+1][col+1];
-
-            float x0 = (col)   * xScale - 10.0f;
-            float x1 = (col+1) * xScale - 10.0f;
-            float z0 = (row)   * zScale - 10.0f;
-            float z1 = (row+1) * zScale - 10.0f;
-
-            auto norm = [&](double v) {
-                return (v - m_minVal) / qMax(m_maxVal - m_minVal, 0.001);
-            };
-
-            float y00 = norm(v00) * yScale - yScale/2;
-            float y10 = norm(v10) * yScale - yScale/2;
-            float y01 = norm(v01) * yScale - yScale/2;
-            float y11 = norm(v11) * yScale - yScale/2;
-
-            // Average color of the 4 corners
-            double avgNorm = (norm(v00) + norm(v10) + norm(v01) + norm(v11)) / 4.0;
-            QColor fill = TunerColorMap::valueToColor(avgNorm);
-
-            // Simple lighting: compute face normal, dot with light
-            QVector3D a(x1-x0, y10-y00, z0-z0);
-            QVector3D b(x0-x0, y01-y00, z1-z0);
-            QVector3D normal = QVector3D::crossProduct(a, b).normalized();
-            QVector3D light(0.5f, 1.0f, 0.5f);
-            light.normalize();
-            float diffuse = qBound(0.3f, QVector3D::dotProduct(normal, light), 1.0f);
-
-            fill = QColor(
-                qBound(0, int(fill.red()   * diffuse), 255),
-                qBound(0, int(fill.green() * diffuse), 255),
-                qBound(0, int(fill.blue()  * diffuse), 255),
-                220
-            );
-
-            // Sort key: average Z of the 4 projected points in camera space
-            Quad q;
-            q.pts[0] = project(x0, y00, z0);
-            q.pts[1] = project(x1, y10, z0);
-            q.pts[2] = project(x1, y11, z1);
-            q.pts[3] = project(x0, y01, z1);
-            q.fill   = fill;
-            q.sortZ  = (z0 + z1) / 2.0f; // simplified sort key
-            quads.append(q);
-        }
-    }
-
-    // Sort back to front
-    std::sort(quads.begin(), quads.end(), [](const Quad& a, const Quad& b) {
-        return a.sortZ > b.sortZ;
-    });
-
-    // Draw all quads
-    p.setRenderHint(QPainter::Antialiasing, m_smoothMode);
-    for (const Quad& q : quads) {
-        QPolygonF poly;
-        for (int i = 0; i < 4; ++i) poly << q.pts[i];
-
-        p.setBrush(q.fill);
-        // Edge lines: slightly darker version of fill
-        QColor edge;
-        if (m_smoothMode) {
-            edge = Qt::transparent; // no edges when smooth
-        } else {
-            edge = q.fill.darker(140);
-            edge.setAlpha(180);
-        }
-        p.setPen(QPen(edge, 0.5f));
-        p.drawPolygon(poly);
-    }
+float TunerMap3DWidget::depth(float x, float y, float z) const {
+    float az = qDegreesToRadians(m_azimuth);
+    float el = qDegreesToRadians(m_elevation);
+    float rz  = -x*qSin(az) + z*qCos(az);
+    return y*qSin(el) + rz*qCos(el);   // camera-space Z
 }
+
+// ── Floor grid ───────────────────────────────────────────────────────────────
 
 void TunerMap3DWidget::renderFloorGrid(QPainter& p) {
-    p.setPen(QPen(QColor(26, 38, 64, 120), 0.5f));
-    float yFloor = -(12.0f / 2.0f); // bottom of value range
-
-    for (int i = 0; i <= 10; ++i) {
-        float t = i / 10.0f * 20.0f - 10.0f;
-        p.drawLine(project(-10, yFloor, t), project(10, yFloor, t));
-        p.drawLine(project(t, yFloor, -10), project(t, yFloor, 10));
+    if (m_rows < 2 || m_cols < 2) return;
+    float xSc = 20.f/qMax(m_cols-1,1), zSc = 20.f/qMax(m_rows-1,1), yF = -6.f;
+    p.setPen(QPen(QColor(30,50,80,90), 0.5f));
+    for (int c = 0; c < m_cols; ++c) {
+        float x = c*xSc - 10.f;
+        p.drawLine(project(x,yF,-10), project(x,yF,10));
+    }
+    for (int r = 0; r < m_rows; ++r) {
+        float z = r*zSc - 10.f;
+        p.drawLine(project(-10,yF,z), project(10,yF,z));
     }
 }
+
+// ── Surface ───────────────────────────────────────────────────────────────────
+
+void TunerMap3DWidget::renderSurface(QPainter& p) {
+    if (m_rows < 2 || m_cols < 2) return;
+
+    bool isFlat = (m_maxVal - m_minVal) < 0.5;
+    float xSc = 20.f/qMax(m_cols-1,1), zSc = 20.f/qMax(m_rows-1,1), yH = 12.f;
+
+    auto norm = [&](double v) -> float {
+        if (isFlat) return 0.5f;
+        return float((v - m_minVal) / qMax(m_maxVal - m_minVal, 0.001));
+    };
+
+    struct Quad { QPointF p[4]; QColor fill; float sortZ; bool sel; int r,c; };
+    QVector<Quad> quads;
+    quads.reserve((m_rows-1)*(m_cols-1));
+    m_centres.clear();
+
+    for (int row = 0; row < m_rows-1; ++row) {
+        for (int col = 0; col < m_cols-1; ++col) {
+            // v_RC: R=row offset, C=col offset
+            double v00 = m_data[row  ][col  ]; // (x0,z0)
+            double v01 = m_data[row  ][col+1]; // (x1,z0) same row, next col
+            double v10 = m_data[row+1][col  ]; // (x0,z1) next row, same col
+            double v11 = m_data[row+1][col+1]; // (x1,z1)
+
+            float x0=col*xSc-10.f, x1=(col+1)*xSc-10.f;
+            float z0=row*zSc-10.f, z1=(row+1)*zSc-10.f;
+
+            // BUG-1 FIX: heights match their XZ positions
+            float y00=norm(v00)*yH-yH/2.f; // (x0,z0)
+            float y01=norm(v01)*yH-yH/2.f; // (x1,z0)
+            float y10=norm(v10)*yH-yH/2.f; // (x0,z1)
+            float y11=norm(v11)*yH-yH/2.f; // (x1,z1)
+
+            double aN = (norm(v00)+norm(v01)+norm(v10)+norm(v11))/4.0;
+            double colorN = isFlat
+                ? (v00-m_minVal)/qMax(m_maxVal-m_minVal+0.001,0.001)
+                : aN;
+            QColor fill = TunerColorMap::valueToColor(colorN);
+
+            // BUG-2 FIX: correct edge vectors for face normal
+            QVector3D a(x1-x0, y01-y00, 0.f);       // edge along X (Z constant)
+            QVector3D b(0.f,   y10-y00, z1-z0);     // edge along Z (X constant)
+            QVector3D n = QVector3D::crossProduct(a, b).normalized();
+            QVector3D L(0.4f, 1.f, 0.6f); L.normalize();
+            float diff = qBound(0.4f, QVector3D::dotProduct(n,L)*0.6f+0.70f, 1.f);
+
+            fill = QColor(qBound(0,int(fill.red()*diff),255),
+                          qBound(0,int(fill.green()*diff),255),
+                          qBound(0,int(fill.blue()*diff),255), 225);
+
+            bool sel = (m_selRow>=0 && m_selCol>=0 &&
+                        (row==m_selRow||row==m_selRow-1) &&
+                        (col==m_selCol||col==m_selCol-1));
+
+            float cx=(x0+x1)/2.f, czw=(z0+z1)/2.f, cyw=(y00+y01+y10+y11)/4.f;
+
+            Quad q;
+            // BUG-1 FIX: correct vertex assignment
+            q.p[0]=project(x0,y00,z0); // (x0,z0)
+            q.p[1]=project(x1,y01,z0); // (x1,z0) ← was y10
+            q.p[2]=project(x1,y11,z1); // (x1,z1)
+            q.p[3]=project(x0,y10,z1); // (x0,z1) ← was y01
+            q.fill=fill;
+            q.sortZ=depth(cx,cyw,czw); // BUG-3 FIX: camera-Z sort
+            q.sel=sel; q.r=row; q.c=col;
+            quads.append(q);
+
+            m_centres.append({project(cx,cyw,czw), row, col});
+        }
+    }
+
+    // BUG-3 FIX: back-to-front by camera depth
+    std::sort(quads.begin(), quads.end(),
+              [](const Quad& a, const Quad& b){ return a.sortZ > b.sortZ; });
+
+    p.setRenderHint(QPainter::Antialiasing, m_smoothMode);
+    for (const Quad& q : quads) {
+        QPolygonF poly; for (int i=0;i<4;++i) poly<<q.p[i];
+        p.setBrush(q.fill);
+        p.setPen(m_smoothMode ? Qt::NoPen : QPen(QColor(0,0,0,55), 0.8f));
+        p.drawPolygon(poly);
+
+        if (q.r==m_hovRow && q.c==m_hovCol) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor(255,255,255,130), 1.5f));
+            p.drawPolygon(poly);
+        }
+        if (q.sel) {
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(QColor("#00E5C8"), 2.5f));
+            p.drawPolygon(poly);
+        }
+    }
+
+    // Flat-table label
+    if (isFlat) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QFont f("JetBrains Mono",11,QFont::Bold);
+        p.setFont(f);
+        p.setPen(QColor(255,255,255,180));
+        p.drawText(QRectF(0,height()/2.0-20,width(),40), Qt::AlignCenter,
+                   QString("Flat Surface  |  value = %1").arg(double(m_data[0][0]), 0, 'f', 2));
+    }
+
+    // Selection pin
+    if (m_selRow>=0 && m_selCol>=0 && m_selRow<m_rows && m_selCol<m_cols) {
+        float xS=m_selCol*xSc-10.f, zS=m_selRow*zSc-10.f;
+        double v=m_data[m_selRow][m_selCol];
+        float yB=-yH/2.f, yT=float((double(v)-m_minVal)/qMax(m_maxVal-m_minVal,0.001))*yH-yH/2.f;
+        p.setRenderHint(QPainter::Antialiasing,true);
+        p.setPen(QPen(QColor("#00E5C8"),1.5f,Qt::DashLine));
+        p.drawLine(project(xS,yB,zS), project(xS,yT+1.5f,zS));
+        QPointF ph=project(xS,yT+1.5f,zS);
+        p.setBrush(QColor("#00E5C8")); p.setPen(Qt::NoPen);
+        p.drawEllipse(ph,4.0,4.0);
+    }
+}
+
+// ── Axes ─────────────────────────────────────────────────────────────────────
 
 void TunerMap3DWidget::renderAxes(QPainter& p) {
     p.setRenderHint(QPainter::Antialiasing, true);
-    QFont font("JetBrains Mono", 9);
-    p.setFont(font);
+    float yF=-6.f;
+    float xSc=20.f/qMax(m_cols-1,1), zSc=20.f/qMax(m_rows-1,1);
 
-    float yFloor = -6.0f;
+    auto drawAxisLine = [&](QColor col, QPointF a, QPointF b) {
+        p.setPen(QPen(col, 2.f)); p.drawLine(a, b);
+    };
 
-    // X axis (RPM)
-    p.setPen(QPen(QColor("#00E5C8"), 1.5f));
-    p.drawLine(project(-10, yFloor, -10), project(10, yFloor, -10));
+    // X (RPM)
+    drawAxisLine(QColor("#00E5C8"), project(-10,yF,-10), project(10,yF,-10));
+    { QPointF lp=project(11.5f,yF,-10);
+      p.setPen(QColor("#9ECFE0")); p.setFont(QFont("JetBrains Mono",9,QFont::Bold));
+      p.drawText(QRectF(lp.x(),lp.y()-10,64,20), Qt::AlignLeft|Qt::AlignVCenter,"RPM →"); }
+
+    // Z (Load)
+    drawAxisLine(QColor("#9B59F5"), project(-10,yF,-10), project(-10,yF,10));
+    { QPointF lp=project(-10,yF,11.5f);
+      p.setPen(QColor("#B89EF0")); p.setFont(QFont("JetBrains Mono",9,QFont::Bold));
+      p.drawText(QRectF(lp.x(),lp.y()-10,72,20), Qt::AlignLeft|Qt::AlignVCenter,"Load →"); }
+
+    // Y (Value)
+    drawAxisLine(QColor("#F5A623"), project(-10,yF,-10), project(-10,6,  -10));
+    { p.setPen(QColor("#F5C87A")); p.setFont(QFont("JetBrains Mono",9,QFont::Bold));
+      QPointF lp=project(-10,8.f,-10);
+      p.drawText(QRectF(lp.x()-40,lp.y()-10,60,20),Qt::AlignCenter,"Value"); }
+
+    // Y min/max labels
+    p.setFont(QFont("JetBrains Mono",8));
     p.setPen(QColor("#7A8FAD"));
-    p.drawText(project(12, yFloor, -10).toPoint(), "RPM →");
+    { QPointF lp=project(-11.5f,yF,-10);
+      p.drawText(QRectF(lp.x()-44,lp.y()-8,44,16),Qt::AlignRight|Qt::AlignVCenter,
+                 QString::number(m_minVal,'f',1)); }
+    { QPointF lp=project(-11.5f,6.f,-10);
+      p.drawText(QRectF(lp.x()-44,lp.y()-8,44,16),Qt::AlignRight|Qt::AlignVCenter,
+                 QString::number(m_maxVal,'f',1)); }
 
-    // Z axis (Load)
-    p.setPen(QPen(QColor("#9B59F5"), 1.5f));
-    p.drawLine(project(-10, yFloor, -10), project(-10, yFloor, 10));
-    p.setPen(QColor("#7A8FAD"));
-    p.drawText(project(-10, yFloor, 12).toPoint(), "Load →");
+    // X tick labels
+    if (!m_xLabels.isEmpty()) {
+        int step=qMax(1,m_cols/8);
+        p.setFont(QFont("JetBrains Mono",7)); p.setPen(QColor("#5A6E8A"));
+        for (int c=0; c<m_cols; c+=step) {
+            float x=c*xSc-10.f;
+            p.drawLine(project(x,yF,-10), project(x,yF-0.6f,-10));
+            if (c<m_xLabels.size()) {
+                QPointF lp=project(x,yF-1.4f,-10);
+                p.drawText(QRectF(lp.x()-20,lp.y()-8,40,16),Qt::AlignCenter,m_xLabels[c]);
+            }
+        }
+    }
 
-    // Y axis (Value)
-    p.setPen(QPen(QColor("#F5A623"), 1.5f));
-    p.drawLine(project(-10, yFloor, -10), project(-10, 6, -10));
-    p.setPen(QColor("#7A8FAD"));
-    p.drawText(project(-10, 8, -10).toPoint(), "Value");
+    // Z tick labels
+    if (!m_zLabels.isEmpty()) {
+        int step=qMax(1,m_rows/8);
+        p.setFont(QFont("JetBrains Mono",7)); p.setPen(QColor("#5A6E8A"));
+        for (int r=0; r<m_rows; r+=step) {
+            float z=r*zSc-10.f;
+            p.drawLine(project(-10,yF,z), project(-10.6f,yF,z));
+            if (r<m_zLabels.size()) {
+                QPointF lp=project(-11.2f,yF,z);
+                p.drawText(QRectF(lp.x()-44,lp.y()-8,44,16),Qt::AlignRight|Qt::AlignVCenter,m_zLabels[r]);
+            }
+        }
+    }
 }
+
+// ── Hover tooltip ─────────────────────────────────────────────────────────────
+
+void TunerMap3DWidget::renderHover(QPainter& p) {
+    if (m_hovRow<0||m_hovCol<0||m_hovRow>=m_rows||m_hovCol>=m_cols) return;
+    double v=m_data[m_hovRow][m_hovCol];
+    QString txt=QString("R%1 C%2: %3").arg(m_hovRow).arg(m_hovCol).arg(v,0,'f',2);
+    if (!m_xLabels.isEmpty()&&m_hovCol<m_xLabels.size())
+        txt=QString("%1 kPa / %2 RPM: %3")
+            .arg(m_zLabels.value(m_hovRow,"?"))
+            .arg(m_xLabels.value(m_hovCol,"?"))
+            .arg(v,0,'f',2);
+
+    p.setRenderHint(QPainter::Antialiasing,true);
+    QFont f("JetBrains Mono",10); p.setFont(f);
+    QFontMetrics fm(f);
+    int tw=fm.horizontalAdvance(txt)+16, th=fm.height()+10;
+    int tx=qBound(4, (int)m_lastMouse.x()-tw/2, width()-tw-4);
+    int ty=qBound(4, (int)m_lastMouse.y()-th-8, height()-th-4);
+    p.setBrush(QColor(15,24,44,210));
+    p.setPen(QPen(QColor("#00E5C8"),1));
+    p.drawRoundedRect(QRect(tx,ty,tw,th),5,5);
+    p.setPen(Qt::white);
+    p.drawText(QRect(tx,ty,tw,th),Qt::AlignCenter,txt);
+}
+
+// ── Paint ─────────────────────────────────────────────────────────────────────
 
 void TunerMap3DWidget::paintEvent(QPaintEvent*) {
     QPainter p(this);
@@ -261,17 +344,13 @@ void TunerMap3DWidget::paintEvent(QPaintEvent*) {
 
     // Background
     p.fillRect(rect(), QColor("#03050D"));
+    QRadialGradient g(width()/2, height()/2, qMin(width(),height())*0.55f);
+    g.setColorAt(0, QColor(0,229,200,14)); g.setColorAt(1,Qt::transparent);
+    p.fillRect(rect(), g);
 
-    // Subtle radial glow at center
-    QRadialGradient glow(width()/2, height()/2, qMin(width(), height()) * 0.6f);
-    glow.setColorAt(0, QColor(0, 229, 200, 12));
-    glow.setColorAt(1, Qt::transparent);
-    p.fillRect(rect(), glow);
-
-    // No data state
     if (m_data.isEmpty()) {
         p.setPen(QColor("#3D5070"));
-        p.setFont(QFont("JetBrains Mono", 13));
+        p.setFont(QFont("JetBrains Mono",13));
         p.drawText(rect(), Qt::AlignCenter, "Select a table to view 3D surface");
         return;
     }
@@ -279,49 +358,56 @@ void TunerMap3DWidget::paintEvent(QPaintEvent*) {
     renderFloorGrid(p);
     renderSurface(p);
     renderAxes(p);
+    renderHover(p);
 
-    // Overlay: smooth/flat mode indicator top-left
+    // Mode badge
     p.setPen(QColor("#3D5070"));
-    p.setFont(QFont("JetBrains Mono", 10));
-    p.drawText(QPoint(12, 20), m_smoothMode ? "SMOOTH" : "FLAT");
+    p.setFont(QFont("JetBrains Mono",9));
+    p.drawText(QPoint(12,18), m_smoothMode ? "● SMOOTH" : "○ FLAT");
 }
 
+// ── Mouse events ──────────────────────────────────────────────────────────────
+
 void TunerMap3DWidget::mousePressEvent(QMouseEvent* e) {
-    m_lastMousePos = e->pos();
-    m_dragging = true;
+    m_lastMouse = e->pos(); m_dragging = true;
     setCursor(Qt::ClosedHandCursor);
 }
 
 void TunerMap3DWidget::mouseMoveEvent(QMouseEvent* e) {
-    if (!m_dragging) return;
-    QPoint delta = e->pos() - m_lastMousePos;
-    m_lastMousePos = e->pos();
-
-    if (e->buttons() & Qt::LeftButton) {
-        m_azimuth   += delta.x() * 0.4f;
-        m_elevation += delta.y() * 0.3f;
-        m_elevation  = qBound(-89.0f, m_elevation, 89.0f);
-    } else if (e->buttons() & Qt::RightButton) {
-        m_panOffset += QPointF(delta.x(), delta.y());
+    QPoint prev = m_lastMouse;
+    m_lastMouse = e->pos();
+    if (m_dragging) {
+        QPoint d = e->pos() - prev;
+        if (e->buttons() & Qt::LeftButton) {
+            m_azimuth   += d.x() * 0.4f;
+            m_elevation  = qBound(-89.f, m_elevation + d.y()*0.3f, 89.f);
+        } else if (e->buttons() & Qt::RightButton) {
+            m_panOffset += QPointF(d.x(), d.y());
+        }
+        update();
+    } else {
+        // Hover: find nearest quad centre
+        int bestR=-1, bestC=-1; float bestD=900.f;
+        for (const auto& qc : m_centres) {
+            float dx=qc.screen.x()-e->pos().x(), dy=qc.screen.y()-e->pos().y();
+            float d2=dx*dx+dy*dy;
+            if (d2<bestD) { bestD=d2; bestR=qc.row; bestC=qc.col; }
+        }
+        if (bestD < 2500.f) { // within 50px
+            if (m_hovRow!=bestR||m_hovCol!=bestC) { m_hovRow=bestR; m_hovCol=bestC; update(); }
+        } else {
+            if (m_hovRow>=0) { m_hovRow=m_hovCol=-1; update(); }
+        }
     }
-    update();
 }
 
 void TunerMap3DWidget::mouseReleaseEvent(QMouseEvent*) {
-    m_dragging = false;
-    setCursor(Qt::OpenHandCursor);
+    m_dragging = false; setCursor(Qt::OpenHandCursor);
 }
 
 void TunerMap3DWidget::wheelEvent(QWheelEvent* e) {
-    float delta = e->angleDelta().y() / 120.0f;
-    m_zoom = qBound(0.3f, m_zoom + delta * 0.1f, 4.0f);
+    m_zoom = qBound(0.3f, m_zoom + e->angleDelta().y()/120.f*0.1f, 4.f);
     update();
 }
 
-void TunerMap3DWidget::mouseDoubleClickEvent(QMouseEvent*) {
-    m_azimuth   = 35.0f;
-    m_elevation = 28.0f;
-    m_zoom      = 1.0f;
-    m_panOffset = {0, 0};
-    update();
-}
+void TunerMap3DWidget::mouseDoubleClickEvent(QMouseEvent*) { resetView(); }

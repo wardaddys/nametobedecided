@@ -1,0 +1,26 @@
+#Project Attributes.
+#TunerStudio by EFI Analytics, Inc
+#Last Saved on: Wed Mar 23 14:28:41 EDT 2016
+#Wed Mar 23 14:28:41 EDT 2016
+Triggers.ActiveTriggers=
+commPort=COM1
+VeAnalyzeConsole.veTable1Tbl_verticalSplitPos=482
+ecuSettings=FAHRENHEIT|INNOVATE_0_5_LINEAR|KPa|LOGPAGES|MEMPAGES_OFF|MPX4250|SPEED_DENSITY|
+canId=0
+userDash1.DashName=Skull
+userDash3.FileName=Sweep.dash
+projectDescription=Example MS1 Extra Project for MS1Extra 29y3 & 29y4
+projectName=MS1_Extra_Example
+protocolEnvelope=
+CommSettingCom\ Port=COM1
+userDash1.FileName=Skull.dash
+ecuConfigFile=mainController.ini
+CommSettingBaud\ Rate=9600
+userDash2.DashName=Default
+userDash0.DashName=Analog Bar
+dashBoardFile=\\dashboard\\\\dashboard.dash
+userDash2.FileName=Default.dash
+tuneFileDir=C\:\\Users\\Philip Tobin\\Documents\\TunerStudioProjects\\MS1_Extra_Example
+baudRate=9600
+userDash3.DashName=Sweep
+userDash0.FileName=Analog Bar.dash

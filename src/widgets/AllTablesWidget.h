@@ -73,6 +73,9 @@ private:
   QLabel *m_tableInfoLabel;
   QLabel *m_tableDescLabel;
 
+  // Main view tabs (Table | 3D Surface)
+  QTabWidget *m_mainViewTabs;
+
   // Cam Profile Tabs (for VTEC)
   QTabWidget *m_camProfileTabs;
   TableEditor *m_lowCamEditor;
@@ -115,6 +118,7 @@ private:
 
   // Current table data meta-info
   QString m_currentTableName;
+  QStringList m_allTableNames; // T5: cached full list for search filtering
   bool m_gridMode;
   bool m_lightMode;
   

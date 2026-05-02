@@ -112,44 +112,61 @@ bool SerialManager::connectToDevice(const QString &portName, qint32 baudRate) {
     }
 
     m_serialPort->setPortName(portName);
-    m_serialPort->setBaudRate(baudRate);
-    m_serialPort->setDataBits(QSerialPort::Data8);
-    m_serialPort->setParity(QSerialPort::NoParity);
-    m_serialPort->setStopBits(QSerialPort::OneStop);
-    m_serialPort->setFlowControl(QSerialPort::NoFlowControl);
+    
+    // Clear any previous error states
+    m_serialPort->clearError();
+
+    // FORCE CLOSE: If the port is already open (perhaps from a previous crash or attempt),
+    // we must close it before we can re-open it with new settings.
+    if (m_serialPort->isOpen()) {
+        Logger::info("Port was already open, force-closing before re-connect.");
+        m_serialPort->close();
+    }
 
     if (m_serialPort->open(QIODevice::ReadWrite)) {
+        // Apply parameters AFTER opening (more robust for some Windows drivers)
+        m_serialPort->setBaudRate(baudRate);
+        m_serialPort->setDataBits(QSerialPort::Data8);
+        m_serialPort->setParity(QSerialPort::NoParity);
+        m_serialPort->setStopBits(QSerialPort::OneStop);
+        m_serialPort->setFlowControl(QSerialPort::NoFlowControl);
+        
+        // CRITICAL: Explicitly set DTR and RTS to wake up the AtMega16U2 serial chip 
+        // on original Arduino Mega boards.
+        m_serialPort->setDataTerminalReady(true);
+        m_serialPort->setRequestToSend(true);
+
         m_status = ConnectionStatus::Connecting;
         emit connectionStatusChanged(m_status);
         Logger::info("Serial port opened: " + portName);
 
-        // ===== BUG-003 FIX: DTR reset byte handling (async) =====
-        // Windows sends 0xF0 as the first byte on port open.
-        // Firmware discards it when serialStatusFlag == SERIAL_INACTIVE.
-        // Wait 500ms then flush any received bytes, WITHOUT blocking UI.
-        QTimer::singleShot(ProtocolTiming::DTR_SETTLE_MS, this, [this]() {
-            if (!m_serialPort->isOpen()) return; // Port closed during wait
+        // Increased to 2000ms for original Mega bootloader stability and triple-flush
+        QTimer::singleShot(2000, this, [this]() {
+            if (!m_serialPort->isOpen()) return;
 
-            if (m_serialPort->bytesAvailable() > 0) {
-                QByteArray discarded = m_serialPort->readAll();
-                Logger::info("Discarded " + QString::number(discarded.size()) +
-                             " DTR settle bytes");
+            // Triple-flush to remove all reset/stale junk
+            for (int i=0; i<3; ++i) {
+                m_serialPort->readAll();
+                m_serialPort->flush();
             }
-
-            // Start connection handshake: send code version request ('Q')
+            
+            // Start connection handshake: Use LEGACY 'S' first for maximum compatibility
             SerialCommand cmd;
-            cmd.data = m_protocol->createSignatureRequest(); // Now produces 'Q'
+            cmd.data = "S"; 
             cmd.type = CommandType::Signature;
-            cmd.expectedResponse = -1;
-            cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
-            cmd.retryCount = ProtocolTiming::RETRY_COUNT;
+            cmd.timeoutMs = 1500; // More generous for signature
+            cmd.retryCount = 5;
+            cmd.isRaw = true; // DO NOT wrap the first command
+            
+            Logger::info("Handshake: Sending Legacy Signature Request ('S')...");
             queueCommand(cmd);
         });
 
         return true;
     } else {
-        Logger::error("Failed to open serial port: " + m_serialPort->errorString());
-        emit error("Failed to open port: " + m_serialPort->errorString());
+        QString err = m_serialPort->errorString();
+        Logger::error("Failed to open serial port: " + err);
+        emit error("Failed to open port: " + err);
         return false;
     }
 }
@@ -278,10 +295,95 @@ void SerialManager::sendBurnCommand(quint8 page) {
 
 void SerialManager::onReadyRead() {
     m_receiveBuffer.append(m_serialPort->readAll());
-    tryParseNewProtocolFrame();
+
+    // DEBUG: Hex dump first 16 bytes of any incoming data to trace ECU behavior
+    if (!m_receiveBuffer.isEmpty()) {
+        Logger::info("RX Buffer (" + QString::number(m_receiveBuffer.size()) + " bytes): " + 
+                     m_receiveBuffer.left(16).toHex(' ').toUpper());
+    }
+
+    // --- UNIVERSAL PACKET RECOGNIZER ---
+    // We try all possible Speeduino response formats in order of likelihood.
+    
+    // 1. Try New Protocol Frame (Wrapped CRC)
+    if (tryParseNewProtocolFrame()) return;
+
+    // 2. Try Raw Telemetry (Awaiting 'A' response)
+    if (m_awaitingResponse && m_currentCommand.type == CommandType::RealTimeData) {
+        
+        // Speeduino may prefix raw responses with 0x06 (RC_OK) in some firmware
+        int offset = 0;
+        if (m_receiveBuffer.size() > 0 && static_cast<uint8_t>(m_receiveBuffer.at(0)) == 0x06) {
+            offset = 1;
+        }
+
+        if (m_receiveBuffer.size() >= (120 + offset)) {
+            try {
+                // Peek at the data: SECL should be a small counter, MAP should be ~100
+                QByteArray dataToParse = m_receiveBuffer.mid(offset);
+                RealTimeData rtData;
+                
+                if (!m_ecuDefinition.getOutputChannels().isEmpty()) {
+                    SpeeduinoProtocol::DynamicRTData dyn = m_protocol->parseRealTimeDataDynamic(dataToParse, m_ecuDefinition);
+                    rtData = dyn.legacy;
+                } else {
+                    rtData = m_protocol->parseRealTimeData(dataToParse);
+                }
+                
+                emit dataReceived(rtData);
+                m_receiveBuffer.clear();
+                m_awaitingResponse = false;
+                m_commandTimeoutTimer->stop();
+                processCommandQueue();
+                return;
+            } catch (...) {
+                // If it looks like a packet but parsing failed, slide the window
+                m_receiveBuffer.remove(0, 1);
+            }
+        }
+    }
+
+    // 3. Fallback: Generic Command Handling (Signature, etc.)
+    // SCAN FOR SIGNATURE ANYWHERE IN BUFFER (Handles frame-wrapped or noisy signatures)
+    if (m_receiveBuffer.contains("Speeduino")) {
+        int index = m_receiveBuffer.indexOf("Speeduino");
+        QByteArray sigData = m_receiveBuffer.mid(index);
+        m_signature = m_protocol->parseSignature(sigData);
+        Logger::info("Signature identified (offset " + QString::number(index) + "): " + m_signature.toString());
+        
+        m_awaitingResponse = false;
+        m_commandTimeoutTimer->stop();
+        processResponse(sigData);
+        m_receiveBuffer.clear();
+        return;
+    }
+
+    if (m_awaitingResponse && m_currentCommand.isRaw) {
+        // Handle 'f' (Capabilities)
+        if (m_currentCommand.type == CommandType::Capabilities && m_receiveBuffer.size() >= 5) {
+            processResponse(m_receiveBuffer);
+            m_receiveBuffer.clear();
+            m_awaitingResponse = false;
+            m_commandTimeoutTimer->stop();
+            processCommandQueue();
+            return;
+        }
+    }
+
+    // --- CASE 3: FALLBACK / ERROR RECOVERY ---
+    if (m_receiveBuffer.size() > 1024) {
+        Logger::warning("Receive buffer overflow, clearing.");
+        m_receiveBuffer.clear();
+    }
+
+    // --- CASE 3: FALLBACK / ERROR RECOVERY ---
+    if (m_receiveBuffer.size() > 1024) {
+        Logger::warning("Receive buffer overflow, clearing.");
+        m_receiveBuffer.clear();
+    }
 }
 
-void SerialManager::tryParseNewProtocolFrame() {
+bool SerialManager::tryParseNewProtocolFrame() {
     // New protocol response: [Length 2B BE] [Payload: RC + data...] [CRC32 4B BE]
     while (m_receiveBuffer.size() >= 6) { // Minimum frame: 2 + 0 + 4 = 6
 
@@ -301,7 +403,7 @@ void SerialManager::tryParseNewProtocolFrame() {
 
         if (m_receiveBuffer.size() < frameSize) {
             // Not enough data yet, wait for more
-            return;
+            return false;
         }
 
         // Extract complete frame
@@ -323,64 +425,80 @@ void SerialManager::tryParseNewProtocolFrame() {
                 Logger::warning("ECU busy (BUSY_ERR), will retry");
                 if (m_currentCommand.retryCount > 0) {
                     m_currentCommand.retryCount--;
-                    // Delay and retry
                     QTimer::singleShot(ProtocolTiming::BUSY_RETRY_DELAY_MS, this, [this]() {
                         m_commandQueue.prepend(m_currentCommand);
                         processCommandQueue();
                     });
-                    return;
+                    return true;
                 }
             } else if (returnCode == SpeeduinoRC::RC_CRC_ERR) {
-                Logger::warning("ECU reported CRC error, retrying");
                 m_crcErrors++;
+                Logger::warning("ECU reported CRC error, retrying");
                 if (m_currentCommand.retryCount > 0) {
                     m_currentCommand.retryCount--;
-                    m_commandQueue.prepend(m_currentCommand);
+                    QTimer::singleShot(150, this, [this]() {
+                        m_commandQueue.prepend(m_currentCommand);
+                        processCommandQueue();
+                    });
+                } else {
+                    processCommandQueue(); 
                 }
-                processCommandQueue();
-                return;
+                return true;
             } else if (returnCode == SpeeduinoRC::RC_RANGE_ERR) {
-                Logger::error("Range error — offset+length exceeds page size (do NOT retry)");
+                Logger::error("Range error — offset+length exceeds page size");
                 processCommandQueue();
-                return;
+                return true;
             } else if (returnCode == SpeeduinoRC::RC_UKWN_ERR) {
                 Logger::error("Unknown command — firmware may be outdated");
                 processCommandQueue();
-                return;
+                return true;
             }
 
-            // Route response based on command type (BUG-007 fix)
+            // Route response based on command type
             processResponse(payload);
+            
+            m_awaitingResponse = false;
+            m_commandTimeoutTimer->stop();
             processCommandQueue();
+            return true;
         } else {
             // CRC validation failed
             m_crcErrors++;
-            Logger::warning("CRC32 validation failed, packet discarded (error #" +
-                            QString::number(m_crcErrors) + ")");
-
-            // Retry the current command
-            if (m_currentCommand.retryCount > 0) {
-                m_currentCommand.retryCount--;
-                m_commandQueue.prepend(m_currentCommand);
-            }
-            m_commandTimeoutTimer->stop();
+            Logger::warning("CRC32 validation failed, packet discarded");
             m_awaitingResponse = false;
+            m_commandTimeoutTimer->stop();
             processCommandQueue();
+            return true;
         }
     }
+    return false;
 }
 
-void SerialManager::onErrorOccurred(QSerialPort::SerialPortError error) {
-    if (error == QSerialPort::NoError) return;
+void SerialManager::onErrorOccurred(QSerialPort::SerialPortError portError) {
+    if (portError == QSerialPort::NoError) return;
 
     Logger::error("Serial port error: " + m_serialPort->errorString());
 
-    if (error == QSerialPort::ResourceError || error == QSerialPort::PermissionError) {
-        disconnectFromDevice();
-        m_status = ConnectionStatus::Error;
-        emit connectionStatusChanged(m_status);
+    if (portError == QSerialPort::ResourceError ||
+        portError == QSerialPort::PermissionError) {
+        // FIX: clear error before close so the errorOccurred signal isn't
+        // re-emitted when we call close() on the still-open port
+        m_serialPort->clearError();
+        if (m_serialPort->isOpen()) m_serialPort->close();
 
-        if (error == QSerialPort::ResourceError) {
+        m_status = ConnectionStatus::Error;
+        m_heartbeatTimer->stop();
+        m_dataPollingTimer->stop();
+        m_commandTimeoutTimer->stop();
+        m_commandQueue.clear();
+        m_receiveBuffer.clear();
+        m_awaitingResponse = false;
+
+        emit connectionStatusChanged(m_status);
+        emit disconnected();
+        Logger::info("Disconnected from device");
+
+        if (portError == QSerialPort::ResourceError) {
             m_reconnectAttempts = 0;
             m_reconnectTimer->start();
         }
@@ -619,11 +737,32 @@ void SerialManager::sendCommand(const QByteArray &command) {
         return;
     }
 
-    // Real hardware: wrap in new-protocol framing
+    // Real hardware
     if (m_serialPort->isOpen()) {
-        QByteArray frame = SpeeduinoProtocol::wrapNewProtocol(command);
-        m_serialPort->write(frame);
+        QByteArray packet;
+        if (m_currentCommand.isRaw) {
+            packet = command; // Send raw byte
+        } else {
+            packet = SpeeduinoProtocol::wrapNewProtocol(command); // Wrap in CRC
+        }
+
+        m_serialPort->write(packet);
+        m_serialPort->flush();
+        
+        // Force the bits out the wire immediately
+        if (!m_serialPort->waitForBytesWritten(100)) {
+            Logger::warning("Hardware write timeout on " + m_portName);
+        }
+
         m_packetsSent++;
+        
+        // Log the first byte for debugging
+        uint8_t opcode = command.isEmpty() ? 0 : static_cast<uint8_t>(command.at(0));
+        Logger::info(QString("TX: Sent %1 command '%2' (0x%3) - Packet size: %4")
+                     .arg(m_currentCommand.isRaw ? "Legacy" : "Wrapped")
+                     .arg(QChar(opcode))
+                     .arg(opcode, 2, 16, QChar('0'))
+                     .arg(packet.size()));
     }
 }
 
@@ -635,6 +774,7 @@ void SerialManager::queueCommand(const SerialCommand &command) {
 void SerialManager::onCommandTimeout() {
     Logger::warning("Command timeout (type: " + QString::number(static_cast<int>(m_currentCommand.type)) + ")");
     m_awaitingResponse = false;
+    m_receiveBuffer.clear(); // Clear buffer to prevent stale data corruption
 
     if (m_currentCommand.retryCount > 0) {
         m_currentCommand.retryCount--;
@@ -658,32 +798,27 @@ void SerialManager::processResponse(const QByteArray &payload) {
 
     switch (cmdType) {
         case CommandType::RealTimeData: {
-            // Payload: [RC] + 130 data bytes
-            if (payload.size() >= 131) {
-                QByteArray dataBytes = payload.mid(1, 130); // Skip RC byte
-                try {
-                    RealTimeData rtData = m_protocol->parseRealTimeData(dataBytes);
+            QByteArray dataBytes = m_currentCommand.isRaw ? payload : payload.mid(1);
 
-                    // Monitor secl for ECU restart detection
+            if (dataBytes.size() >= 120) {
+                try {
+                    RealTimeData rtData;
+                    if (m_ecuDefinition.getOutputChannels().isEmpty()) {
+                        rtData = m_protocol->parseRealTimeData(dataBytes);
+                    } else {
+                        SpeeduinoProtocol::DynamicRTData dyn = m_protocol->parseRealTimeDataDynamic(dataBytes, m_ecuDefinition);
+                        rtData = dyn.legacy;
+                    }
+                    
                     if (rtData.secl < m_lastSecl && m_lastSecl > 10) {
-                        Logger::warning("ECU restart detected (secl rolled back: " +
-                                        QString::number(m_lastSecl) + " → " +
+                        Logger::warning("ECU restart detected (secl roll: " +
+                                        QString::number(m_lastSecl) + " -> " +
                                         QString::number(rtData.secl) + ")");
                     }
                     m_lastSecl = rtData.secl;
-
                     emit dataReceived(rtData);
                 } catch (const QString &e) {
-                    Logger::error("Failed to parse RT data: " + e);
-                }
-            } else if (payload.size() >= 130) {
-                // No RC byte (simulation mode or legacy)
-                try {
-                    RealTimeData rtData = m_protocol->parseRealTimeData(payload.left(130));
-                    m_lastSecl = rtData.secl;
-                    emit dataReceived(rtData);
-                } catch (const QString &e) {
-                    Logger::error("Failed to parse RT data: " + e);
+                    Logger::error("RT parse error: " + e);
                 }
             }
             break;
@@ -849,14 +984,24 @@ void SerialManager::sendHeartbeat() {
 }
 
 void SerialManager::requestRealTimeData() {
+    // Only poll if we are fully connected and validated
+    if (m_status != ConnectionStatus::Connected) return;
+
+    // If TX has been dead for too long (>200ms), force-clear the waiting flag
+    if (m_awaitingResponse && m_lastCommandSent.msecsTo(QDateTime::currentDateTime()) > 200) {
+        Logger::warning("TX Lock detected! Force-clearing awaitingResponse flag.");
+        m_awaitingResponse = false;
+    }
+
     if (m_commandQueue.size() < 2 && !m_awaitingResponse) {
         SerialCommand cmd;
-        cmd.data = m_protocol->createRealTimeDataRequest();
+        cmd.data = "A"; // Speeduino Real-time data request
         cmd.type = CommandType::RealTimeData;
-        cmd.expectedResponse = -1; // New protocol uses length header
-        cmd.timeoutMs = 200;
+        cmd.isRaw = true; // ALWAYS use raw 'A' for maximum compatibility (matches TunerStudio)
+        cmd.timeoutMs = 120; // Fast timeout for 30Hz polling
         cmd.retryCount = 0;
         queueCommand(cmd);
+        m_lastCommandSent = QDateTime::currentDateTime();
     }
 }
 
@@ -875,19 +1020,21 @@ void SerialManager::attemptReconnection() {
     Logger::info("Attempting reconnection (" +
                  QString::number(m_reconnectAttempts) + ")...");
 
+    // FIX: ensure port is fully closed before trying to re-open it
+    if (m_serialPort->isOpen()) {
+        m_serialPort->clearError();
+        m_serialPort->close();
+    }
+
     QList<QSerialPortInfo> ports = detectDevices();
     bool portFound = false;
     for (const auto &port : ports) {
-        if (port.portName() == m_portName) {
-            portFound = true;
-            break;
-        }
+        if (port.portName() == m_portName) { portFound = true; break; }
     }
 
     if (portFound) {
         if (connectToDevice(m_portName, m_baudRate)) {
             m_reconnectTimer->stop();
-            Logger::info("Reconnected successfully");
         }
     }
 }

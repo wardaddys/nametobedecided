@@ -570,6 +570,21 @@ bool ECUDefinition::isConditionActive(const QString& name) const {
     return m_conditions.value(name, false);
 }
 
+bool ECUDefinition::isSpeeduinoCompatible() const {
+    // An empty signature means no [TunerStudio] section was parsed — allow it
+    // (the app falls back to hardcoded Speeduino defaults).
+    if (m_signature.isEmpty()) return true;
+
+    // Known Speeduino / MS2Extra signatures are compatible
+    if (m_signature.contains("speeduino", Qt::CaseInsensitive)) return true;
+    if (m_signature.contains("ms2extra",  Qt::CaseInsensitive)) return true;
+    if (m_signature.contains("ms2/extra", Qt::CaseInsensitive)) return true;
+
+    // MS1/Extra, MicroSquirt, and other platforms are NOT directly compatible
+    return false;
+}
+
+
 const QMap<QString, ECUDefinition::OutputChannel> &ECUDefinition::getOutputChannels() const {
     return m_outputChannels;
 }
@@ -1069,15 +1084,55 @@ void ECUDefinition::parseTableEditor(QTextStream &in) {
                 if (key == "yBins" && values.size() >= 1) currentTable.yLabel = values[0];
                 if (key == "zBins" && values.size() >= 1) {
                     QString zConst = values[0];
+                    currentTable.zLabel = zConst;  // Always record the name
+
                     if (m_constants.contains(zConst)) {
+                        // Normal path: constant fully parsed
                         Constant c = m_constants[zConst];
-                        currentTable.address = c.offset;
-                        currentTable.rows = c.rows;
-                        currentTable.cols = c.cols;
-                        currentTable.scale = c.scale;
-                        currentTable.translate = c.translate;
+                        currentTable.address     = c.offset;
+                        currentTable.rows        = c.rows;
+                        currentTable.cols        = c.cols;
+                        currentTable.scale       = c.scale;
+                        currentTable.translate   = c.translate;
                         currentTable.elementSize = c.byteSize();
-                        currentTable.zLabel = zConst;
+                    } else {
+                        // Fallback path: constant not found (common with MS1/Extra
+                        // conditional blocks). Use a hard-coded dimension table for
+                        // known MS1/Extra array constant names so that the table at
+                        // least has valid dimensions for the data-injection guardrail.
+                        //
+                        // Format of entries: { name, rows, cols, elementSize, scale }
+                        struct KnownDim { const char *name; int rows; int cols; int sz; double sc; };
+                        static const KnownDim kKnown[] = {
+                            { "veBins1",    12, 12, 1, 1.0  },
+                            { "veBins2",    12, 12, 1, 1.0  },
+                            { "veBins3",    12, 12, 1, 1.0  },
+                            { "advTable1",  12, 12, 1, 1.0  },
+                            { "advTable2",  12, 12, 1, 1.0  },
+                            { "afrBins1",    8,  8, 1, 0.0196 },
+                            { "afrBins2",    8,  8, 1, 0.0196 },
+                            { "bcBins1",    8,  8, 1, 1.0  },
+                            { "bcBins2",    8,  8, 1, 1.0  },
+                            { "bcBins3",    8,  8, 1, 1.0  },
+                            { "splitTable", 8,  8, 1, 1.0  },
+                        };
+                        bool found = false;
+                        for (const auto &kd : kKnown) {
+                            if (zConst == QLatin1String(kd.name)) {
+                                currentTable.rows        = kd.rows;
+                                currentTable.cols        = kd.cols;
+                                currentTable.elementSize = kd.sz;
+                                currentTable.scale       = kd.sc;
+                                currentTable.translate   = 0.0;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            qWarning() << "parseTableEditor: zBins constant not found and no"
+                                          " fallback dim for" << zConst
+                                       << "— table" << currentTable.name << "will have 0x0 dims";
+                        }
                     }
                 }
             }

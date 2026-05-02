@@ -16,6 +16,7 @@
 #include <QDebug>
 #include <QHeaderView>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QtMath>
 
 
@@ -71,8 +72,12 @@ void TableEditor::setupUi() {
        .arg(TunerProColors::TEXT_SECONDARY));
 
   setSelectionMode(QAbstractItemView::ContiguousSelection);
+  // T6: pixel-perfect section sizes — rows 28px, cols 60px minimum
   horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-  verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+  verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+  verticalHeader()->setDefaultSectionSize(28);
+  horizontalHeader()->setMinimumSectionSize(50);
+  verticalHeader()->setMinimumWidth(40);
 }
 
 void TableEditor::setTableData(const QVector<QVector<double>> &data,
@@ -88,8 +93,11 @@ void TableEditor::setTableData(const QVector<QVector<double>> &data,
   setHorizontalHeaderLabels(xHeaders);
   setVerticalHeaderLabels(yHeaders);
 
-  for (int r = 0; r < data.size(); ++r) {
-    for (int c = 0; c < data[r].size(); ++c) {
+  // T2: guard against data/header count mismatch
+  int numRows = qMin(data.size(), rowCount());
+  for (int r = 0; r < numRows; ++r) {
+    int numCols = qMin(data[r].size(), columnCount());
+    for (int c = 0; c < numCols; ++c) {
       double val = data[r][c];
       QTableWidgetItem *item =
           new QTableWidgetItem(QString::number(val, 'f', 2));
@@ -306,7 +314,32 @@ void TableEditor::interpolateSelected() {
 }
 
 void TableEditor::copyToClipboard() {
-  // TODO: CSV format copy
+  // T4: TSV export to system clipboard
+  QString tsv;
+  // Header row (column labels)
+  tsv += "\t";
+  for (int c = 0; c < columnCount(); ++c) {
+    QTableWidgetItem *h = horizontalHeaderItem(c);
+    tsv += (h ? h->text() : QString::number(c));
+    if (c < columnCount() - 1) tsv += "\t";
+  }
+  tsv += "\n";
+
+  // Data rows
+  for (int r = 0; r < rowCount(); ++r) {
+    QTableWidgetItem *rh = verticalHeaderItem(r);
+    tsv += (rh ? rh->text() : QString::number(r)) + "\t";
+    for (int c = 0; c < columnCount(); ++c) {
+      QTableWidgetItem *it = item(r, c);
+      tsv += (it ? it->text() : "");
+      if (c < columnCount() - 1) tsv += "\t";
+    }
+    tsv += "\n";
+  }
+
+  QMimeData *mime = new QMimeData();
+  mime->setText(tsv);
+  QApplication::clipboard()->setMimeData(mime);
 }
 
 void TableEditor::pasteFromClipboard() {

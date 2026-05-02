@@ -10,6 +10,7 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QStyle>
 
 // Include widget headers
@@ -142,7 +143,14 @@ void MainWindow::onOpenProject() {
   }
 }
 
-MainWindow::~MainWindow() {}
+MainWindow::~MainWindow() {
+  // Disconnect from ECU cleanly before any members are destroyed.
+  // This prevents pending timers or callbacks from firing on dead objects.
+  if (m_serialManager) {
+    m_serialManager->disconnectFromDevice();
+  }
+}
+
 
 void MainWindow::setupUi() {
   QWidget *centralWidget = new QWidget(this);
@@ -250,6 +258,8 @@ void MainWindow::setupUi() {
   // === Section 1.1: Only create widgets that are actually displayed ===
   // The 9 tuning widgets are created inside ECUSettingsWidget — NOT here.
   m_dashboard = new DashboardWidget(this);
+  m_dashboard->setSettingsManager(m_ecuSettingsManager);  // Fix 2: wire offline scalar updates
+
   m_allTablesWidget = new AllTablesWidget(m_ecuSettingsManager, this);
   m_allTablesWidget->setSerialManager(m_serialManager);
   m_ecuSettingsWidget = new ECUSettingsWidget(m_ecuSettingsManager, this);
@@ -361,12 +371,14 @@ void MainWindow::onConnectionStatusChanged(ConnectionStatus status) {
     }
 
     // Start data polling
-    m_serialManager->startDataPolling();
+    m_serialManager->startDataPolling(33); // 30Hz for responsive movement
 
     // Read all ECU pages after a brief delay to let connection stabilize
-    QTimer::singleShot(500, this, [this]() {
-      if (m_ecuSettingsWidget && m_serialManager && m_serialManager->isConnected()) {
-        m_ecuSettingsWidget->readAllFromECU();
+    QPointer<MainWindow> guard(this);
+    QTimer::singleShot(500, this, [guard]() {
+      if (!guard) return; // MainWindow already destroyed
+      if (guard->m_ecuSettingsWidget && guard->m_serialManager && guard->m_serialManager->isConnected()) {
+        guard->m_ecuSettingsWidget->readAllFromECU();
         Logger::info("Reading all ECU configuration pages after connect...");
       }
     });
@@ -409,7 +421,12 @@ void MainWindow::updateConnectionUI(bool connected) {
 
 // === Section 2.1 + Section 3: Full data bridge from serial to UI ===
 void MainWindow::updateRealtimeData(const RealTimeData &data) {
-  // === Status Bar: ALL 11 labels (Section 3.1) ===
+  // 1. Update Dashboard Widget
+  if (m_dashboard) {
+    m_dashboard->updateData(data);
+  }
+
+  // 2. Update Status Bar Labels
   if (m_rpmLabel)
     m_rpmLabel->setText(QString("RPM: %1").arg(data.getRPM()));
   if (m_mapLabel)
@@ -426,25 +443,14 @@ void MainWindow::updateRealtimeData(const RealTimeData &data) {
     m_boostLabel->setText(QString("Boost: %1 psi").arg(boostPsi, 0, 'f', 1));
   }
 
-  // Vehicle Speed (Not in standard Speeduino, estimate from RPM)
+  // Vehicle Speed
   if (m_speedLabel) {
-    int speed = static_cast<int>(data.getRPM() / 45.0);
-    m_speedLabel->setText(QString("Speed: %1 km/h (Est)").arg(speed));
+    m_speedLabel->setText(QString("Speed: %1 km/h").arg(data.getVSS()));
   }
 
-  // Gear estimate
+  // Gear
   if (m_gearLabel) {
-    int speed = static_cast<int>(data.getRPM() / 45.0);
-    QString gear = "N";
-    if (data.getRPM() > 500 && speed > 5) { // BUG-012 FIX: More robust speed threshold
-      double ratio = static_cast<double>(data.getRPM()) / speed;
-      if (ratio > 90) gear = "1";
-      else if (ratio > 60) gear = "2";
-      else if (ratio > 45) gear = "3";
-      else if (ratio > 35) gear = "4";
-      else gear = "5";
-    }
-    m_gearLabel->setText(QString("Gear: %1 (Est)").arg(gear));
+    m_gearLabel->setText(QString("Gear: %1").arg(data.gear == 0 ? "N" : QString::number(data.gear)));
   }
 
   // Oil Temperature - Not in standard Speeduino
@@ -490,20 +496,20 @@ void MainWindow::onConnectClicked() {
           }
       }
   } else {
-      // No ports found - Suggest Simulation
-      QMessageBox::StandardButton reply;
-      reply = QMessageBox::question(this, "No Devices Found",
-                                    "No Speeduino device detected.\nWould you like to enter Simulation Mode?",
-                                    QMessageBox::Yes|QMessageBox::No);
-      if (reply == QMessageBox::Yes) {
-          m_serialManager->setSimulationMode(true);
-          if (m_serialManager->connectToDevice("SIMULATOR")) {
-             m_connectButton->setText("Disconnect (Sim)");
-             m_connectButton->setStyleSheet(
-                "QPushButton { background-color: #f57f17; color: white; border: none; padding: 6px; border-radius: 4px; }"
-                "QPushButton:hover { background-color: #fbc02d; }");
-          }
+    // No ports found - Suggest Simulation
+    QMessageBox::StandardButton reply;
+    reply = QMessageBox::question(this, "No Devices Found",
+                                  "No Speeduino device detected.\nWould you like to enter Simulation Mode?",
+                                  QMessageBox::Yes|QMessageBox::No);
+    if (reply == QMessageBox::Yes) {
+      m_serialManager->setSimulationMode(true);
+      if (m_serialManager->connectToDevice("SIMULATOR")) {
+        m_connectButton->setText("Disconnect (Sim)");
+        m_connectButton->setStyleSheet(
+            "QPushButton { background-color: #f57f17; color: white; border: none; padding: 6px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #fbc02d; }");
       }
+    }
   }
 }
 
@@ -649,6 +655,7 @@ void MainWindow::onEcuSettingsError(const QString &error) {
 
   QMessageBox::warning(this, "ECU Settings Error", error);
 }
+
 
 // === Section 2.4: Disconnection handling ===
 void MainWindow::onDisconnected() {

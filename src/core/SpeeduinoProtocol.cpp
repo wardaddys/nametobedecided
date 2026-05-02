@@ -309,10 +309,11 @@ QByteArray SpeeduinoProtocol::createToothLogRequest() {
 // ============================================================================
 
 RealTimeData SpeeduinoProtocol::parseRealTimeData(const QByteArray &data) {
-    if (data.size() < PacketSizes::REALTIME_DATA_SIZE) {
-        throw QString("Packet too short: %1 bytes (expected %2)")
-                  .arg(data.size())
-                  .arg(PacketSizes::REALTIME_DATA_SIZE);
+    // Speeduino firmware may send 120, 124, 128, or 130 bytes depending on version.
+    // Minimum spec for basic telemetry is 120 bytes.
+    if (data.size() < 120) {
+        throw QString("Packet too short: %1 bytes (expected at least 120)")
+                  .arg(data.size());
     }
 
     RealTimeData rt;

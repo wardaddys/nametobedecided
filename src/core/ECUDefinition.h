@@ -162,6 +162,7 @@ public:
   const QMap<int, Page> &getPages() const;
   
   QString getSignature() const { return m_signature; }
+  bool isSpeeduinoCompatible() const;
   int getOutputChannelsSize() const { return m_outputChannelsSize; }
   
   /**
