@@ -1,8 +1,8 @@
 /**
  * @file main.cpp
- * @brief TunerPro ECU Tuning Application - Main Entry Point
+ * @brief OS Tuner ECU Tuning Application - Main Entry Point
  *
- * This is the starting point of the TunerPro application. It initializes
+ * This is the starting point of the OS Tuner application. It initializes
  * the Qt application framework, sets up the main window, applies the dark
  * theme, and starts the event loop.
  *
@@ -10,13 +10,15 @@
  * @author Muhammad Saeed Sajid (FA-22-143)
  * @supervisor Prof. Dr. Shariq Hussain
  * @date November 2025
- * @version 1.0.0
+ * @version 0.5.0-alpha
  */
 
 #include "MainWindow.h"
+#include "core/version.h"
 #include "utils/Logger.h"
 #include "utils/Settings.h"
 #include "widgets/TunerProSplashScreen.h"
+#include "core/WorkspaceRegistry.h"
 #include <QApplication>
 #include <QEventLoop>
 #include <QTimer>
@@ -88,27 +90,31 @@ int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
 
   // Set application metadata (used for QSettings organization)
-  QApplication::setOrganizationName("TunerStudioTeam");
-  QApplication::setOrganizationDomain("tunerstudio.org");
-  QApplication::setApplicationName("TunerStudio OS");
-  QApplication::setApplicationVersion("2.0.0-alpha");
+  QApplication::setOrganizationName("OSTuner");
+  QApplication::setOrganizationDomain("ostuner.dev");
+  QApplication::setApplicationName("OS Tuner");
+  QApplication::setApplicationVersion(OSTUNER_VERSION_STRING);
 
   // Initialize logging system
-  Logger::initialize("TunerStudio.log");
-  Logger::info("=== TunerStudio OS ECU Tuning Application Starting ===");
-  Logger::info("Version: 2.0.0-alpha");
+  Logger::initialize("OSTuner.log");
+  Logger::info("=== OS Tuner ECU Tuning Application Starting ===");
+  Logger::info("Version: " + QString(OSTUNER_VERSION_STRING));
   Logger::info("Build Date: " + QString(__DATE__) + " " + QString(__TIME__));
 
   // Initialize settings system
   Settings::initialize();
   Logger::info("Settings initialized from: " + Settings::fileName());
 
+  // Initialize WorkspaceRegistry
+  WorkspaceRegistry::instance().loadMappingFromYaml(":/workspaces/mapping.yaml");
+  Logger::info("Workspace mapping loaded");
+
   // Load fonts
   loadFonts();
 
   // Load and apply dark theme stylesheet
   if (!loadStyleSheet(&app)) {
-    QMessageBox::warning(nullptr, "TunerStudio OS - Warning",
+    QMessageBox::warning(nullptr, "OS Tuner - Warning",
                          "Failed to load stylesheet. Using default theme.");
   }
 
@@ -141,7 +147,7 @@ int main(int argc, char *argv[]) {
 
   // Create and show main window
   MainWindow mainWindow;
-  mainWindow.setWindowTitle("TunerStudio OS - Open-Source ECU Tuning");
+  mainWindow.setWindowTitle("OS Tuner — Open-Source ECU Tuning");
   mainWindow.resize(1400, 900); // Initial window size
   mainWindow.show();
 
@@ -160,7 +166,7 @@ int main(int argc, char *argv[]) {
   // Cleanup before exit
   Logger::info("Application shutting down with exit code: " +
                QString::number(exitCode));
-  Logger::info("=== TunerStudio OS Terminated ===");
+  Logger::info("=== OS Tuner Terminated ===");
 
   return exitCode;
 }

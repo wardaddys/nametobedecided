@@ -123,40 +123,59 @@ QDialog {
     border-radius: 8px;
 }
 
-/* ── CUSTOM TITLEBAR ── */
-#TitleBar {
+/* ── HEADER BAR (Consolidated) ── */
+#HeaderBar {
     background-color: #07080A;
     border-bottom: 1px solid #131A22;
-    min-height: 36px;
-    max-height: 36px;
+    min-height: 48px;
+    max-height: 48px;
 }
 
-/* App icon + name left cluster */
+/* App name */
 #TitleBarAppName {
     font-family: "Barlow Condensed";
-    font-size: 13px;
-    font-weight: 500;
-    color: #435870;
-    padding-left: 4px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #D8E4EE;
+    letter-spacing: 0.05em;
+    padding-right: 8px;
 }
 
-/* Project name pill — center */
+/* Project name pill */
 #ProjectNamePill {
     background-color: #181D24;
     border: 1px solid #1D2A36;
     border-radius: 12px;
-    padding: 0 10px;
+    padding: 0 12px;
     min-height: 24px;
     max-height: 24px;
     font-family: "Barlow Condensed";
     font-size: 12px;
     font-weight: 500;
-    color: #D8E4EE;
+    color: #7D96AD;
 }
 
-/* Unsaved changes state — applied via setObjectName or dynamic property */
 #ProjectNamePill[unsaved="true"] {
     border-color: #00C8A045;
+    color: #00C8A0;
+}
+
+/* COM Port / Read-Write Dropdown */
+#ComPortSelector {
+    background-color: #181D24;
+    border: 1px solid #1D2A36;
+    border-radius: 6px;
+    color: #D8E4EE;
+    font-family: "Inter";
+    font-size: 12px;
+    padding: 0 10px;
+    min-height: 32px;
+    max-height: 32px;
+    min-width: 120px;
+}
+#ComPortSelector:hover {
+    border-color: #2B3D50;
+    background-color: #1D2A36;
 }
 
 /* Traffic light buttons */
@@ -168,21 +187,12 @@ QDialog {
     border-radius: 6px;
     background-color: #2B3D50;
     border: none;
+    margin: 0 2px;
 }
 
-/* Show colors only when titlebar area is hovered */
-#TitleBar:hover #TitleBarClose { background-color: #EF4444; }
-#TitleBar:hover #TitleBarMinimize { background-color: #EAB308; }
-#TitleBar:hover #TitleBarMaximize { background-color: #22C55E; }
-
-/* ── TOOLBAR ── */
-#ToolBar {
-    background-color: #111519;
-    border-bottom: 1px solid #131A22;
-    min-height: 44px;
-    max-height: 44px;
-    padding: 0 16px;
-}
+#HeaderBar:hover #TitleBarClose { background-color: #EF4444; }
+#HeaderBar:hover #TitleBarMinimize { background-color: #EAB308; }
+#HeaderBar:hover #TitleBarMaximize { background-color: #22C55E; }
 
 /* COM Port selector */
 #ComPortSelector {

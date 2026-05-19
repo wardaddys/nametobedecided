@@ -13,6 +13,7 @@
 #include "ECUData.h"
 #include <QObject>
 #include <QHash>
+#include <QSet>
 #include <QVariant>
 #include <QByteArray>
 #include <QTimer>
@@ -79,11 +80,21 @@ public:
      * @brief Get the definition for a setting
      */
     ECUDefinition::Constant getDefinition(const QString &settingName) const;
-    
+
     /**
      * @brief Check if a setting exists
      */
     bool hasSetting(const QString &settingName) const;
+
+    // F2: Additive const accessors used by MsqParser::save() and other tools
+    // that need to walk every setting / table without reaching into private
+    // members.  None of these change existing behaviour.
+    QStringList getAllConstantNames() const;
+    QStringList getPcVariableNames() const;
+    QVector<QVector<double>> getTableData(const QString &tableName) const;
+    QMap<QString, bool> getActiveConditionalFlags() const;
+    bool isPcVariable(const QString &settingName) const;
+    const ECUDefinition &definition() const { return m_ecuDef; }
     
     // ========== ECU Operations ==========
     
@@ -162,6 +173,21 @@ signals:
      * @brief Emitted when burn completes
      */
     void burnComplete(quint8 page);
+
+    /**
+     * @brief Progress during burnAllDirty chain: current/total pages
+     */
+    void burnAllProgress(int current, int total);
+
+    /**
+     * @brief Emitted when burnAllDirty chain finishes (all pages done)
+     */
+    void burnAllComplete();
+
+    /**
+     * @brief Emitted when burnAllDirty chain fails on a specific page
+     */
+    void burnAllFailed(quint8 page, const QString &reason);
     
     void errorOccurred(const QString &error);
     
@@ -206,6 +232,7 @@ private:
     QMap<QString, ECUDefinition::Table> m_tableDefinitions; // Added
     QHash<QString, QVariant> m_values;           // Cached user-scale values
     QMap<QString, QVector<QVector<double>>> m_tableData; // Added
+    QSet<QString> m_pcVariableNames;             // F2: distinguish PC-only vars
     
     QByteArray m_pageCache[MAX_PAGES];
     bool m_pageDirty[MAX_PAGES];                 // Pages with pending writes
@@ -220,6 +247,11 @@ private:
     quint8 m_pendingBurnPage;
     bool m_isVerifyingBurn;                      // Is true while polling status4
     quint32 m_expectedPageCRC;                   // Computed CRC to compare against ECU
+
+    // Chained burn-all state (BUG-A fix)
+    QList<quint8> m_burnQueue;                   // Ordered list of dirty pages to burn
+    bool m_burnAllInProgress = false;            // True while chained burn is running
+    void advanceBurnQueue();                     // Process next page in burn chain
 };
 
 #endif // ECUSETTINGSMANAGER_H

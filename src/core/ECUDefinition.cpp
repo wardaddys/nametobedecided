@@ -5,6 +5,9 @@
 #include <QFile>
 #include <QRegularExpression>
 #include <QTextStream>
+#include <QIODevice>
+#include <functional>
+#include "WorkspaceRegistry.h"
 
 ECUDefinition::ECUDefinition() {
     // Initialize with default condition
@@ -13,57 +16,302 @@ ECUDefinition::ECUDefinition() {
 
 bool ECUDefinition::load(const QString &filePath) {
     QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODeviceBase::ReadOnly | QIODevice::Text)) {
         qDebug() << "Failed to open ECU definition file:" << filePath;
         return false;
     }
 
-    int currentPageId = 1;
-    QTextStream in(&file);
-    
-    while (!in.atEnd()) {
-        QString line = in.readLine();
-        QString trimmedLine = line.trimmed();
-        
-        // Skip empty lines and comments
-        if (trimmedLine.isEmpty() || trimmedLine.startsWith(";")) {
-            continue;
-        }
-        
-        // Process directives (#if, #set, #define, etc.)
-        if (trimmedLine.startsWith("#")) {
-            processDirective(trimmedLine);
-            continue;
-        }
-        
-        // Skip if inside a false conditional block
-        if (shouldSkipLine()) {
-            continue;
-        }
-        
-        // Expand #define macros
-        QString expandedLine = expandDefines(trimmedLine);
+    // BUG-G fix: Reset all state from any previous load() call.
+    // Without this, loading file B after file A would merge both.
+    m_constants.clear();
+    m_outputChannels.clear();
+    m_controllerCommands.clear();
+    m_pages.clear();
+    m_tableDefinitions.clear();
+    m_conditions.clear();
+    m_defines.clear();
+    m_conditionalStack.clear();
+    m_conditionalStack.push(true); // Re-initialize default condition
+    m_conditionalMatched.clear();
+    m_conditionalMatched.push(true); // sentinel: outer "scope" always matched
+    m_skipCurrentBlock = false;
+    m_signature.clear();
+    m_outputChannelsSize = 0;
 
-        // Parse section headers
-        if (expandedLine.compare("[TunerStudio]", Qt::CaseInsensitive) == 0) {
-            parseTunerStudio(in);
-        } else if (expandedLine.compare("[OutputChannels]", Qt::CaseInsensitive) == 0) {
-            parseOutputChannels(in);
-        } else if (expandedLine.compare("[Constants]", Qt::CaseInsensitive) == 0) {
-            parseConstants(in, currentPageId);
-        } else if (expandedLine.compare("[ControllerCommands]", Qt::CaseInsensitive) == 0) {
-            parseControllerCommands(in);
-        } else if (expandedLine.compare("[TableEditor]", Qt::CaseInsensitive) == 0) {
-            parseTableEditor(in);
-        } else if (expandedLine.startsWith("page", Qt::CaseInsensitive)) {
-            // Parse page = N
-            QRegularExpression pageRegex(R"(page\s*=\s*(\d+))");
-            QRegularExpressionMatch match = pageRegex.match(expandedLine);
-            if (match.hasMatch()) {
-                currentPageId = match.captured(1).toInt();
+    // Group C resets — same BUG-G discipline.
+    m_settingGroups.clear();
+    m_pcVariables.clear();
+    m_datalogFields.clear();
+    m_gaugeTemplates.clear();
+    m_curveEditors.clear();
+    m_menuDialogs.clear();
+    m_dialogs.clear();
+
+    // Pre-scan for #set/#unset directives AND [SettingGroups] choices.
+    //
+    // Real-world MS1/Extra and MS3 INIs declare [SettingGroups] near the END
+    // of the file, but the #if directives inside [Constants] reference those
+    // group options. A single-pass parser sees every #if FOO as false (since
+    // FOO has not been #set yet) and silently skips most of [Constants],
+    // leaving the definition empty — exactly the "Failed to parse" symptom
+    // the user reported when opening MS1 Extra Example.
+    //
+    // We open the file twice. First pass: collect #set/#unset and the first
+    // non-DEFAULT option of every settingGroup into m_conditions. Second
+    // pass below: normal parse, but m_conditions now contains the active
+    // option names so #if dispatches to the correct branch.
+    {
+        QFile preFile(filePath);
+        if (preFile.open(QIODeviceBase::ReadOnly | QIODevice::Text)) {
+            QTextStream pre(&preFile);
+            bool inSettingGroups = false;
+            QString currentGroupRef;
+            bool currentGroupHasChoice = false;
+            while (!pre.atEnd()) {
+                const QString raw = pre.readLine();
+                const QString line = raw.trimmed();
+                if (line.isEmpty() || line.startsWith(';')) continue;
+
+                if (line.startsWith("#set ")) {
+                    m_conditions[line.mid(5).trimmed()] = true;
+                    continue;
+                }
+                if (line.startsWith("#unset ")) {
+                    m_conditions[line.mid(7).trimmed()] = false;
+                    continue;
+                }
+
+                // Section header
+                static const QRegularExpression sectRe(R"(^\s*\[\s*(\w+)\s*\]\s*$)");
+                auto m = sectRe.match(line);
+                if (m.hasMatch()) {
+                    inSettingGroups = (m.captured(1).toLower() == "settinggroups");
+                    currentGroupRef.clear();
+                    currentGroupHasChoice = false;
+                    continue;
+                }
+
+                if (!inSettingGroups) continue;
+
+                const int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                const QString key = line.left(eq).trimmed();
+                const QString val = line.mid(eq + 1).trimmed();
+
+                if (key == "settingGroup") {
+                    // settingGroup = referenceName, "Display Name"
+                    const int comma = val.indexOf(',');
+                    currentGroupRef = (comma >= 0 ? val.left(comma) : val).trimmed();
+                    currentGroupHasChoice = false;
+                } else if (key == "settingOption" && !currentGroupRef.isEmpty()) {
+                    // Pre-scan strategy:
+                    //   - The FIRST non-DEFAULT option for each group is
+                    //     marked as the "primary" choice (set true in
+                    //     m_conditions). This matches TS's documented INI-
+                    //     default behaviour: the first option wins until the
+                    //     user picks another in the project's properties.
+                    //   - Every subsequent option in the group is also set
+                    //     true, BUT only relative to its #if guard.
+                    //
+                    // Why so aggressive? Real-world Speeduino / MS3 INIs guard
+                    // hundreds of constants behind option flags. With strict
+                    // first-wins semantics, the alternate-branch constants
+                    // are completely absent — which is fine for runtime but
+                    // useless for OS Tuner's static UI, because those
+                    // constants are then unreachable to the workspace
+                    // mapping. Marking all options "true" + relying on the
+                    // first-match-wins #elif semantics we added to
+                    // processDirective gives us the correct primary branch
+                    // AND keeps the alternate-branch constants visible to
+                    // discovery (gauges, dashboards, datalog) — anywhere
+                    // that doesn't depend on the conditional dispatch.
+                    const int comma = val.indexOf(',');
+                    const QString optName = (comma >= 0 ? val.left(comma) : val).trimmed();
+                    if (optName.isEmpty() || optName == "DEFAULT") continue;
+                    if (!currentGroupHasChoice) {
+                        // Primary: register first.
+                        m_conditions[optName] = true;
+                        currentGroupHasChoice = true;
+                    } else {
+                        // Secondary options also enabled so the #elif
+                        // first-wins logic correctly picks the primary
+                        // without leaving downstream branches "dead".
+                        m_conditions[optName] = true;
+                    }
+                }
             }
+            preFile.close();
         }
     }
+
+    // Fallback: most modern Speeduino INIs guard their primary [Constants]
+    // section with #if directives like CAN_COMMANDS_BLOCK, COMPOSITE_LOGGER,
+    // NEW_SERIAL_PROTOCOL, etc. These are gated by board variant and don't
+    // appear in [SettingGroups]. Enable them by default so the parser
+    // actually reaches the constants. Individual INIs that intentionally
+    // disable a feature use #unset, which the pre-scan already honoured
+    // above.
+    static const char* kSpeeduinoDefaultFlags[] = {
+        "CAN_COMMANDS_BLOCK", "COMPOSITE_LOGGER", "NEW_SERIAL_PROTOCOL",
+        "CELSIUS", "BAR_MAP", "PSI", "RPM",
+        "SPEEDUINO", "MS2_EXTRA", "MS3",
+        "ENGINE_PROTECTION", "FUEL_PUMP_PRIME",
+        "EGO_ALGORITHM", "SECONDARY_TABLES",
+        "BOOST_CONTROL", "VVT", "VVT2", "WMI", "NITROUS",
+    };
+    for (const char* flag : kSpeeduinoDefaultFlags) {
+        if (!m_conditions.contains(flag)) {
+            m_conditions[flag] = true;
+        }
+    }
+
+    // =====================================================================
+    // TwoPhase load() — matches TunerStudio reference (W/aB.java, method
+    // a(R, String, boolean, int) at lines 165-294).
+    //
+    // PHASE 1 — Ingest:
+    //   Read the entire file into a map<section, list<line>>. While reading,
+    //   honour #if/#elif/#else/#endif so that lines from inactive branches
+    //   never enter any bucket. Any line BEFORE the first [section] header
+    //   is treated as orphan and ignored. #set/#unset/#define directives
+    //   apply globally — they mutate m_conditions / m_defines as soon as
+    //   they're seen (TS does the same in its two-phase pass).
+    //
+    // PHASE 2 — Dispatch in dependency order:
+    //   PcVariables → Constants → OutputChannels → ControllerCommands →
+    //   SettingGroups → CurveEditor → Datalog → GaugeConfigurations →
+    //   Menu → UserDefined → TableEditor
+    //
+    //   TableEditor MUST run last so xBins/yBins/zBins lookups against
+    //   m_constants always see a fully-populated map regardless of where
+    //   the [TableEditor] section appeared in the source file.
+    //
+    //   Each bucket is concatenated in source order — if a section name
+    //   appears multiple times (e.g. once per #if branch), TS treats them
+    //   as additive (A/x.java:46-52). We do the same.
+    // =====================================================================
+
+    // Buckets: section name (lowercased) -> joined body text, ready to be
+    // re-streamed through the existing per-section parsers.
+    QMap<QString, QString> sectionBuckets;
+    // Also track ordered append so the test fixture-style INI fixtures that
+    // pass `page = N` *between* `[Constants]` lines retain that order.
+    int currentPageId = 1;
+    // For per-line page tracking inside [Constants] we prepend a marker
+    // line so parseConstants can read it back: "page = N".
+    QString currentSection;
+
+    {
+        QTextStream in(&file);
+        static const QRegularExpression sectionRegex(
+            R"(^\s*\[\s*(\w+)\s*\]\s*$)");
+
+        while (!in.atEnd()) {
+            const QString raw = in.readLine();
+            const QString trimmed = raw.trimmed();
+
+            // Comments / blank lines: drop.
+            if (trimmed.isEmpty() || trimmed.startsWith(";")) continue;
+
+            // Global directives FIRST — they mutate state regardless of
+            // whether we're in a section.
+            if (trimmed.startsWith("#")) {
+                processDirective(trimmed);
+                continue;
+            }
+
+            // Inside an inactive #if branch — drop the line entirely.
+            if (shouldSkipLine()) continue;
+
+            // Apply #define macro expansion before bucketing so downstream
+            // parsers don't have to.
+            const QString expanded = expandDefines(trimmed);
+
+            // Section header? Switch buckets.
+            const auto m = sectionRegex.match(expanded);
+            if (m.hasMatch()) {
+                currentSection = m.captured(1).toLower();
+                continue;
+            }
+
+            // `page = N` is a top-level state mutation that affects
+            // [Constants]. We forward it into the Constants bucket so
+            // parseConstants sees it in order.
+            if (expanded.startsWith("page", Qt::CaseInsensitive)) {
+                static const QRegularExpression pageRegex(R"(page\s*=\s*(\d+))");
+                const auto pm = pageRegex.match(expanded);
+                if (pm.hasMatch()) {
+                    currentPageId = pm.captured(1).toInt();
+                }
+                // Also inject into the constants bucket so parseConstants
+                // honours the page-id ordering exactly as before.
+                sectionBuckets["constants"].append(expanded + "\n");
+                continue;
+            }
+
+            // No active section — orphan line. (TS warns and drops; we
+            // drop silently.)
+            if (currentSection.isEmpty()) continue;
+
+            sectionBuckets[currentSection].append(expanded + "\n");
+        }
+    }
+
+    // Phase-2 helper: feed a section's body text through a per-section
+    // parser that expects a QTextStream.
+    auto runSection = [&](const QString& name, const std::function<void(QTextStream&)>& fn) {
+        if (!sectionBuckets.contains(name)) return;
+        QString body = sectionBuckets.value(name);
+        QTextStream ss(&body, QIODevice::ReadOnly);
+        qInfo().noquote() << "ECUDefinition: phase-2 [" << name
+                          << "] (" << body.size() << " bytes)";
+        fn(ss);
+    };
+
+    // Dispatch in dependency order — TableEditor LAST so axis lookups see
+    // a fully populated m_constants map regardless of source order.
+    runSection("tunerstudio",          [&](QTextStream& s){ parseTunerStudio(s); });
+    runSection("settinggroups",        [&](QTextStream& s){ parseSettingGroups(s); });
+    runSection("pcvariables",          [&](QTextStream& s){ parsePcVariables(s); });
+    runSection("constants", [&](QTextStream& s) {
+        // parseConstants takes a page id as a hint for any constants that
+        // appear before a `page = N` directive in the bucket. We pass the
+        // last-seen top-level page id so an INI without explicit page=N
+        // inside the section still gets a stable default.
+        parseConstants(s, currentPageId);
+    });
+    runSection("outputchannels",       [&](QTextStream& s){ parseOutputChannels(s); });
+    runSection("controllercommands",   [&](QTextStream& s){ parseControllerCommands(s); });
+    runSection("curveeditor",          [&](QTextStream& s){ parseCurveEditor(s); });
+    runSection("datalog",              [&](QTextStream& s){ parseDatalog(s); });
+    runSection("gaugeconfigurations",  [&](QTextStream& s){ parseGaugeConfigurations(s); });
+    runSection("menu",                 [&](QTextStream& s){ parseMenu(s); });
+    runSection("userdefined",          [&](QTextStream& s){ parseUserDefined(s); });
+    runSection("tableeditor",          [&](QTextStream& s){ parseTableEditor(s); });
+    runSection("constantsextensions",  [&](QTextStream& s){ parseConstantsExtensions(s); });
+    runSection("settingcontexthelp",   [&](QTextStream& s){ parseSettingContextHelp(s); });
+    runSection("veanalyze",            [&](QTextStream& s){ parseVeAnalyze(s); });
+    runSection("wueanalyze",           [&](QTextStream& s){ parseWueAnalyze(s); });
+
+    // Log any sections that were ingested but had no handler — these are
+    // expected (e.g. [MegaTune], [FrontPage], [Tuning]) and are kept here
+    // only for observability.
+    for (auto it = sectionBuckets.constBegin(); it != sectionBuckets.constEnd(); ++it) {
+        static const QSet<QString> handled = {
+            "tunerstudio", "settinggroups", "pcvariables", "constants",
+            "outputchannels", "controllercommands", "curveeditor",
+            "datalog", "gaugeconfigurations", "menu", "userdefined",
+            "tableeditor", "constantsextensions", "settingcontexthelp",
+            "veanalyze", "wueanalyze"
+        };
+        if (!handled.contains(it.key())) {
+            qInfo().noquote() << "ECUDefinition: ignored section ["
+                              << it.key() << "] ("
+                              << it.value().size() << " bytes)";
+        }
+    }
+
+    applyWorkspaceMetadata();
 
     return true;
 }
@@ -105,41 +353,59 @@ bool ECUDefinition::processDirective(const QString &line) {
         return true;
     }
     
-    // #if CONDITION
+    // #if CONDITION — open a new #if/#elif/#else chain.
+    // m_conditionalMatched tracks whether ANY branch in this chain has
+    // already evaluated true; subsequent #elif/#else branches in the
+    // same chain are suppressed when this flag is set (matches C-pre-
+    // processor first-match-wins semantics).
     if (directive.startsWith("#if ")) {
-        QString condName = directive.mid(4).trimmed();
-        bool condValue = m_conditions.value(condName, false);
-        m_conditionalStack.push(condValue && m_conditionalStack.top());
+        const QString condName = directive.mid(4).trimmed();
+        const bool condValue = m_conditions.value(condName, false);
+        const bool parentActive = m_conditionalStack.isEmpty()
+            ? true : m_conditionalStack.top();
+        const bool branchActive = condValue && parentActive;
+        m_conditionalStack.push(branchActive);
+        m_conditionalMatched.push(branchActive);
         return true;
     }
-    
-    // #elif CONDITION
-    // [CRIT-6] Must AND with parent context, same as #if
+
+    // #elif CONDITION — only run if no prior branch in this chain matched.
     if (directive.startsWith("#elif ")) {
-        if (!m_conditionalStack.isEmpty()) {
-            m_conditionalStack.pop();
+        if (!m_conditionalStack.isEmpty())  m_conditionalStack.pop();
+        const bool alreadyMatched =
+            m_conditionalMatched.isEmpty() ? false : m_conditionalMatched.top();
+        const QString condName = directive.mid(6).trimmed();
+        const bool condValue = m_conditions.value(condName, false);
+        // Parent context is the next-outer scope after popping our entry.
+        const bool parentActive = m_conditionalStack.isEmpty()
+            ? true : m_conditionalStack.top();
+        const bool branchActive = !alreadyMatched && condValue && parentActive;
+        m_conditionalStack.push(branchActive);
+        if (!m_conditionalMatched.isEmpty()) {
+            m_conditionalMatched.top() = alreadyMatched || branchActive;
         }
-        QString condName = directive.mid(6).trimmed();
-        bool condValue = m_conditions.value(condName, false);
-        bool parentActive = m_conditionalStack.isEmpty() ? true : m_conditionalStack.top();
-        m_conditionalStack.push(condValue && parentActive);
         return true;
     }
-    
-    // #else
+
+    // #else — run only if no prior branch matched.
     if (directive == "#else") {
-        if (!m_conditionalStack.isEmpty()) {
-            bool current = m_conditionalStack.pop();
-            m_conditionalStack.push(!current);
+        if (!m_conditionalStack.isEmpty()) m_conditionalStack.pop();
+        const bool alreadyMatched =
+            m_conditionalMatched.isEmpty() ? false : m_conditionalMatched.top();
+        const bool parentActive = m_conditionalStack.isEmpty()
+            ? true : m_conditionalStack.top();
+        const bool branchActive = !alreadyMatched && parentActive;
+        m_conditionalStack.push(branchActive);
+        if (!m_conditionalMatched.isEmpty()) {
+            m_conditionalMatched.top() = alreadyMatched || branchActive;
         }
         return true;
     }
-    
-    // #endif
+
+    // #endif — close the chain.
     if (directive == "#endif") {
-        if (m_conditionalStack.size() > 1) {
-            m_conditionalStack.pop();
-        }
+        if (m_conditionalStack.size() > 1)  m_conditionalStack.pop();
+        if (m_conditionalMatched.size() > 1) m_conditionalMatched.pop();
         return true;
     }
     
@@ -356,6 +622,7 @@ void ECUDefinition::parseConstants(QTextStream &in, int pageId) {
             constant.name = match.captured(1);
             constant.paramClass = "scalar";
             constant.type = match.captured(2);
+            constant.page = pageId;
             constant.offset = match.captured(3).toInt();
             constant.units = match.captured(4);
             constant.scale = match.captured(5).toDouble();
@@ -382,6 +649,7 @@ void ECUDefinition::parseConstants(QTextStream &in, int pageId) {
             constant.name = match.captured(1);
             constant.paramClass = "bits";
             constant.type = match.captured(2);
+            constant.page = pageId;
             constant.offset = match.captured(3).toInt();
             constant.bitField.lowBit = match.captured(4).toInt();
             constant.bitField.highBit = match.captured(5).toInt();
@@ -422,6 +690,7 @@ void ECUDefinition::parseConstants(QTextStream &in, int pageId) {
             constant.name = match.captured(1);
             constant.paramClass = "array";
             constant.type = match.captured(2);
+            constant.page = pageId;
             constant.offset = match.captured(3).toInt();
             constant.cols = match.captured(4).toInt();
             constant.rows = match.capturedLength(5) > 0 ? match.captured(5).toInt() : 1;
@@ -466,11 +735,18 @@ void ECUDefinition::parseControllerCommands(QTextStream &in) {
                 QString p = part.trimmed();
                 if (p.startsWith("\"") && p.endsWith("\"")) {
                     // String command - parse bytes
-                    cmd.commands.append(parseCommandBytes(p.mid(1, p.length() - 2)));
+                    const QString tpl = p.mid(1, p.length() - 2);
+                    QStringList vars;
+                    cmd.commands.append(parseCommandBytes(tpl, &vars));
+                    cmd.commandTemplates.append(tpl);
+                    cmd.commandVariables.append(vars);
                 } else {
                     // Reference to another command
                     if (m_controllerCommands.contains(p)) {
-                        cmd.commands.append(m_controllerCommands[p].commands);
+                        const auto& src = m_controllerCommands[p];
+                        cmd.commands.append(src.commands);
+                        cmd.commandTemplates.append(src.commandTemplates);
+                        cmd.commandVariables.append(src.commandVariables);
                     }
                 }
             }
@@ -480,15 +756,16 @@ void ECUDefinition::parseControllerCommands(QTextStream &in) {
     }
 }
 
-QByteArray ECUDefinition::parseCommandBytes(const QString &cmdStr) {
+QByteArray ECUDefinition::parseCommandBytes(const QString &cmdStr,
+                                            QStringList *referencedVariables) {
     QByteArray result;
     int i = 0;
-    
+
     while (i < cmdStr.length()) {
         if (cmdStr[i] == '\\') {
             i++;
             if (i >= cmdStr.length()) break;
-            
+
             if (cmdStr[i] == 'x' || cmdStr[i] == 'X') {
                 // Hex byte \xNN
                 i++;
@@ -500,15 +777,34 @@ QByteArray ECUDefinition::parseCommandBytes(const QString &cmdStr) {
                 }
                 i += 2;
             } else if (cmdStr[i] == '$') {
-                // Variable substitution \$varName
+                // B1 fix: variable substitution \$varName.
+                // The original code appended a single '\0' byte, which is
+                // both the wrong width (a U16 constant must take 2 bytes,
+                // not 1) and discards the variable name. Now we look up the
+                // referenced constant's type to emit a correctly-sized
+                // placeholder (zero bytes), and capture the variable name
+                // so a runtime resolver can fill in the live value.
                 i++;
                 QString varName;
-                while (i < cmdStr.length() && (cmdStr[i].isLetterOrNumber() || cmdStr[i] == '_')) {
+                while (i < cmdStr.length()
+                       && (cmdStr[i].isLetterOrNumber() || cmdStr[i] == '_')) {
                     varName += cmdStr[i++];
                 }
-                // Lookup variable value (would need variable resolver)
-                // For now, just append 0
-                result.append('\0');
+                if (referencedVariables) {
+                    referencedVariables->append(varName);
+                }
+                int width = 1;
+                if (m_constants.contains(varName)) {
+                    width = m_constants.value(varName).byteSize();
+                } else {
+                    qWarning().noquote()
+                        << "ControllerCommands: \\$"
+                        << varName
+                        << "references unknown constant — emitting 1-byte placeholder.";
+                }
+                for (int b = 0; b < width; ++b) {
+                    result.append('\0');
+                }
             } else if (cmdStr[i] == 'n') {
                 result.append('\n');
                 i++;
@@ -527,7 +823,7 @@ QByteArray ECUDefinition::parseCommandBytes(const QString &cmdStr) {
             i++;
         }
     }
-    
+
     return result;
 }
 
@@ -599,6 +895,82 @@ const QMap<QString, ECUDefinition::ControllerCommand> &ECUDefinition::getControl
 
 const QMap<int, ECUDefinition::Page> &ECUDefinition::getPages() const {
     return m_pages;
+}
+
+void ECUDefinition::applyWorkspaceMetadata() {
+    auto& registry = WorkspaceRegistry::instance();
+
+    int mappedConstants = 0;
+    int mappedTables = 0;
+
+    for (auto it = m_constants.begin(); it != m_constants.end(); ++it) {
+        if (registry.isSettingMapped(it.key())) {
+            const auto& map = registry.getMapping(it.key());
+            it.value().primaryWorkspace = map.primaryWorkspace;
+            it.value().secondaryWorkspaces = map.secondaryWorkspaces;
+            it.value().subsection = map.subsection;
+            it.value().displayOrder = map.displayOrder;
+            it.value().humanLabel = map.humanLabel;
+            it.value().helpText = map.helpText;
+            ++mappedConstants;
+        }
+    }
+
+    for (auto it = m_tableDefinitions.begin(); it != m_tableDefinitions.end(); ++it) {
+        if (registry.isSettingMapped(it.key())) {
+            const auto& map = registry.getMapping(it.key());
+            it.value().primaryWorkspace = map.primaryWorkspace;
+            it.value().secondaryWorkspaces = map.secondaryWorkspaces;
+            it.value().subsection = map.subsection;
+            it.value().displayOrder = map.displayOrder;
+            it.value().humanLabel = map.humanLabel;
+            it.value().helpText = map.helpText;
+            ++mappedTables;
+        }
+    }
+
+    int mappedPcVars = 0;
+    for (auto it = m_pcVariables.begin(); it != m_pcVariables.end(); ++it) {
+        if (registry.isSettingMapped(it.key())) {
+            const auto& map = registry.getMapping(it.key());
+            it.value().primaryWorkspace = map.primaryWorkspace;
+            it.value().secondaryWorkspaces = map.secondaryWorkspaces;
+            it.value().subsection = map.subsection;
+            it.value().displayOrder = map.displayOrder;
+            it.value().humanLabel = map.humanLabel;
+            it.value().helpText = map.helpText;
+            ++mappedPcVars;
+        }
+    }
+
+    // A1: Lint — warn about mapping.yaml entries that don't match any parsed
+    // constant or table. Silent drift is the #1 way the workspace UI ends up
+    // pointing at settings that no longer exist.
+    QSet<QString> knownNamesLower;
+    for (auto it = m_constants.constBegin(); it != m_constants.constEnd(); ++it) knownNamesLower.insert(it.key().toLower());
+    for (auto it = m_tableDefinitions.constBegin(); it != m_tableDefinitions.constEnd(); ++it) knownNamesLower.insert(it.key().toLower());
+    for (auto it = m_pcVariables.constBegin(); it != m_pcVariables.constEnd(); ++it) knownNamesLower.insert(it.key().toLower());
+
+    const QStringList allMappedLowercase = registry.allMappedNames();
+    QStringList orphans;
+    for (const QString& nameLower : allMappedLowercase) {
+        if (!knownNamesLower.contains(nameLower)) {
+            orphans.append(registry.getMapping(nameLower).name);
+        }
+    }
+    if (!orphans.isEmpty()) {
+        qWarning().noquote() << "WorkspaceMetadata: mapping.yaml references"
+                             << orphans.size()
+                             << "name(s) with no matching Constant, Table, or PC Variable:"
+                             << orphans.join(", ");
+    }
+    qInfo().noquote() << "WorkspaceMetadata: applied to"
+                      << mappedConstants << "constants,"
+                      << mappedTables << "tables, and"
+                      << mappedPcVars << "pc variables ("
+                      << (m_constants.size() - mappedConstants) << "constants unmapped,"
+                      << (m_tableDefinitions.size() - mappedTables) << "tables unmapped,"
+                      << (m_pcVariables.size() - mappedPcVars) << "pc variables unmapped)";
 }
 
 // Helper macro to create Constant entries more concisely
@@ -777,6 +1149,20 @@ QMap<QString, ECUDefinition::Constant> ECUDefinition::getDefaultSpeeduinoConstan
     addConst("wuePctM40",       9,  26, "U08", 1.0, 0.0, 100, 200, "%", "ColdStart");
     addConst("wuePctM20",       9,  27, "U08", 1.0, 0.0, 100, 200, "%", "ColdStart");
     addConst("wuePct0",         9,  28, "U08", 1.0, 0.0, 100, 200, "%", "ColdStart");
+
+    // Apply workspace metadata to default constants
+    auto& registry = WorkspaceRegistry::instance();
+    for (auto it = constants.begin(); it != constants.end(); ++it) {
+        if (registry.isSettingMapped(it.key())) {
+            const auto& map = registry.getMapping(it.key());
+            it.value().primaryWorkspace = map.primaryWorkspace;
+            it.value().secondaryWorkspaces = map.secondaryWorkspaces;
+            it.value().subsection = map.subsection;
+            it.value().displayOrder = map.displayOrder;
+            it.value().humanLabel = map.humanLabel;
+            it.value().helpText = map.helpText;
+        }
+    }
     addConst("wuePct20",        9,  29, "U08", 1.0, 0.0, 100, 200, "%", "ColdStart");
     addConst("wuePct40",        9,  30, "U08", 1.0, 0.0, 100, 200, "%", "ColdStart");
     addConst("wuePct60",        9,  31, "U08", 1.0, 0.0, 100, 150, "%", "ColdStart");
@@ -1080,8 +1466,61 @@ void ECUDefinition::parseTableEditor(QTextStream &in) {
                     }
                 }
                 
-                if (key == "xBins" && values.size() >= 1) currentTable.xLabel = values[0];
-                if (key == "yBins" && values.size() >= 1) currentTable.yLabel = values[0];
+                // B2 fix: xBins/yBins resolution.
+                // Grammar: xBins = arrayConstName, channelName [, readOnly]
+                //          yBins = arrayConstName [, channelName] [, { expr }]
+                // The old code just stashed the first token as the axis
+                // *label* and discarded the rest. We now resolve the
+                // referenced array constant from [Constants] and surface the
+                // bin count, scale, translate, and units the UI needs.
+                auto resolveAxis = [this](const QString& axisConstName,
+                                          int* outCount, double* outScale,
+                                          double* outTranslate, QString* outUnits) {
+                    if (axisConstName.isEmpty()) return;
+                    if (!m_constants.contains(axisConstName)) return;
+                    const Constant& c = m_constants.value(axisConstName);
+                    // 1-D array constant: cols carries the bin count.
+                    const int bins = c.cols > 0 ? c.cols : c.rows;
+                    if (outCount)     *outCount = bins;
+                    if (outScale)     *outScale = c.scale;
+                    if (outTranslate) *outTranslate = c.translate;
+                    if (outUnits)     *outUnits = c.units;
+                };
+
+                if (key == "xBins" && values.size() >= 1) {
+                    currentTable.xAxisConstant = values[0];
+                    if (values.size() >= 2) currentTable.xAxisChannel = values[1];
+                    resolveAxis(values[0],
+                                &currentTable.xBinCount,
+                                &currentTable.xAxisScale,
+                                &currentTable.xAxisTranslate,
+                                &currentTable.xAxisUnits);
+                    // Keep the existing label semantics: human-readable label
+                    // remains the constant name unless something better is
+                    // available.
+                    if (currentTable.xLabel.isEmpty()) {
+                        currentTable.xLabel = !currentTable.xAxisUnits.isEmpty()
+                            ? QString("%1 (%2)").arg(values[0], currentTable.xAxisUnits)
+                            : values[0];
+                    }
+                }
+                if (key == "yBins" && values.size() >= 1) {
+                    currentTable.yAxisConstant = values[0];
+                    if (values.size() >= 2
+                        && !values[1].startsWith('{')) {
+                        currentTable.yAxisChannel = values[1];
+                    }
+                    resolveAxis(values[0],
+                                &currentTable.yBinCount,
+                                &currentTable.yAxisScale,
+                                &currentTable.yAxisTranslate,
+                                &currentTable.yAxisUnits);
+                    if (currentTable.yLabel.isEmpty()) {
+                        currentTable.yLabel = !currentTable.yAxisUnits.isEmpty()
+                            ? QString("%1 (%2)").arg(values[0], currentTable.yAxisUnits)
+                            : values[0];
+                    }
+                }
                 if (key == "zBins" && values.size() >= 1) {
                     QString zConst = values[0];
                     currentTable.zLabel = zConst;  // Always record the name
@@ -1162,10 +1601,17 @@ ECUDefinition::SignatureValidation ECUDefinition::validateSignature(const ECUSig
                 .arg(receivedSig.protocolVersion));
     }
     
-    // Check firmware version string matches definition signature
-    // Definition signature format: "Speeduino YYYY.MM or similar"
-    // Received format: "Speeduino 2025.01" from ECU
-    if (!receivedSig.firmwareVersion.contains(m_signature, Qt::CaseInsensitive)) {
+    // Check that ECU identifies as Speeduino (broad match).
+    // We don't hard-block on exact version mismatch because:
+    //  - The ECU may send a minimal "Speeduino" response without a version
+    //  - INI definitions often work across minor firmware versions
+    bool ecuIsSpeeduino = receivedSig.firmwareVersion.contains("Speeduino", Qt::CaseInsensitive) ||
+                          receivedSig.firmwareVersion.contains("202", Qt::CaseInsensitive); // year-based versions
+    bool defIsSpeeduino = m_signature.contains("Speeduino", Qt::CaseInsensitive) ||
+                          m_signature.contains("202", Qt::CaseInsensitive);
+    
+    if (!ecuIsSpeeduino && !defIsSpeeduino) {
+        // Neither side claims to be Speeduino — block
         return SignatureValidation(false,
             QString("Firmware mismatch: definition expects '%1', ECU reports '%2'")
                 .arg(m_signature)
@@ -1186,3 +1632,689 @@ ECUDefinition::SignatureValidation ECUDefinition::validateSignature(const ECUSig
 
 
 #undef MAKE_CONSTANT
+
+// ============================================================================
+// Group C: INI parsers for the seven missing sections.
+//
+// Each parser follows the same pattern as the existing parseTableEditor /
+// parseOutputChannels family:
+//   - Read one line at a time.
+//   - Bail on '[' (next section).
+//   - Honour `#if/#else/#endif` via processDirective + shouldSkipLine.
+//   - Expand `#define` macros via expandDefines.
+//
+// The parsers populate the m_* maps declared in the header. They never modify
+// existing data structures (constants, output channels, controller commands)
+// so they cannot regress any pre-existing parser behaviour.
+// ============================================================================
+
+QStringList ECUDefinition::splitTopLevelCommas(const QString& line) {
+    // Comma split that respects `{ ... }` and `" ... "` so expressions and
+    // labels containing commas survive intact. Used by gauges, datalog, and
+    // curve editor parsers.
+    QStringList out;
+    QString cur;
+    int braceDepth = 0;
+    bool inQuotes = false;
+    for (QChar ch : line) {
+        if (ch == '"' && braceDepth == 0) {
+            inQuotes = !inQuotes;
+            cur.append(ch);
+        } else if (ch == '{' && !inQuotes) {
+            braceDepth++;
+            cur.append(ch);
+        } else if (ch == '}' && !inQuotes) {
+            braceDepth = qMax(0, braceDepth - 1);
+            cur.append(ch);
+        } else if (ch == ',' && braceDepth == 0 && !inQuotes) {
+            out.append(cur.trimmed());
+            cur.clear();
+        } else {
+            cur.append(ch);
+        }
+    }
+    if (!cur.isEmpty()) out.append(cur.trimmed());
+    // Strip outer quotes once at the boundary.
+    for (QString& v : out) {
+        if (v.startsWith('"') && v.endsWith('"') && v.size() >= 2) {
+            v = v.mid(1, v.size() - 2);
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// C1: [SettingGroups]
+//
+// Grammar:
+//   settingGroup  = referenceName, "Display Name"
+//   settingOption = OPTION_NAME, "Option Label"
+//   settingOption = DEFAULT, "Fallback Label"   ; matches the #else branch
+//
+// Side-effect: the first non-DEFAULT option for each group is registered in
+// m_conditions so conditional sections that reference it dispatch correctly.
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseSettingGroups(QTextStream &in) {
+    SettingGroup current;
+    bool inGroup = false;
+
+    auto commit = [&]() {
+        if (inGroup && !current.referenceName.isEmpty()) {
+            if (current.selectedOption.isEmpty()) {
+                for (const auto& opt : current.options) {
+                    if (opt.name != "DEFAULT") { current.selectedOption = opt.name; break; }
+                }
+            }
+            // Drive #if dispatch: mark the selected option as set.
+            if (!current.selectedOption.isEmpty()) {
+                m_conditions[current.selectedOption] = true;
+            }
+            m_settingGroups.insert(current.referenceName, current);
+        }
+        current = SettingGroup();
+        inGroup = false;
+    };
+
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) { commit(); return; }
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+        if (key == "settingGroup" && vals.size() >= 1) {
+            commit();
+            current.referenceName = vals.value(0);
+            current.displayName   = vals.value(1);
+            inGroup = true;
+        } else if (key == "settingOption" && inGroup && vals.size() >= 1) {
+            SettingGroupOption opt;
+            opt.name  = vals.value(0);
+            opt.label = vals.value(1);
+            current.options.append(opt);
+        }
+    }
+    commit();
+}
+
+// ---------------------------------------------------------------------------
+// C2: [PcVariables]
+//
+// Same grammar as [Constants] but with no offset column — the values live on
+// the PC, not in an ECU page. We reuse the Constant struct for storage.
+// Supported forms: scalar, bits, array, string.
+// ---------------------------------------------------------------------------
+void ECUDefinition::parsePcVariables(QTextStream &in) {
+    // Re-use a simplified parseConstants subset.
+    // Lines look like:
+    //   name = scalar, U16, "units", scale, translate, min, max, digits
+    //   name = bits,   U08, [0:0], "labelA", "labelB"
+    //   name = array,  U08, [N], "units", scale, translate, min, max, digits
+    //   name = string, ASCII, N
+    QRegularExpression nameRe(R"(^\s*(\w+)\s*=\s*(.*)$)");
+
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        auto m = nameRe.match(line);
+        if (!m.hasMatch()) continue;
+
+        const QString name = m.captured(1);
+        QStringList vals = splitTopLevelCommas(m.captured(2));
+        if (vals.isEmpty()) continue;
+
+        Constant c;
+        c.name = name;
+        c.page = -1;          // sentinel: PC-side variable
+        c.offset = 0;
+        c.paramClass = vals.value(0).trimmed();
+        if (c.paramClass == "scalar") {
+            c.type = vals.value(1);
+            c.units = vals.value(2);
+            c.scale = vals.value(3).toDouble();
+            c.translate = vals.value(4).toDouble();
+            c.min = vals.value(5).toDouble();
+            c.max = vals.value(6).toDouble();
+            c.digits = vals.value(7).toInt();
+        } else if (c.paramClass == "bits") {
+            c.type = vals.value(1);
+            QStringList opts;
+            for (int i = 3; i < vals.size(); ++i) opts << vals[i];
+            c.bitField = parseBitField(vals.value(2), opts);
+        } else if (c.paramClass == "array") {
+            c.type = vals.value(1);
+            // Shape like [16] or [16x16]
+            QRegularExpression shapeRe(R"(\[(\d+)(?:x(\d+))?\])");
+            auto sm = shapeRe.match(vals.value(2));
+            if (sm.hasMatch()) {
+                c.cols = sm.captured(1).toInt();
+                c.rows = sm.captured(2).isEmpty() ? 1 : sm.captured(2).toInt();
+            }
+            c.units = vals.value(3);
+            c.scale = vals.value(4).toDouble();
+            c.translate = vals.value(5).toDouble();
+            c.min = vals.value(6).toDouble();
+            c.max = vals.value(7).toDouble();
+            c.digits = vals.value(8).toInt();
+        } else if (c.paramClass == "string") {
+            c.type = vals.value(1);  // ASCII
+            c.cols = vals.value(2).toInt();
+            c.rows = 1;
+        }
+        m_pcVariables.insert(name, c);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C3: [Datalog]
+//
+// Grammar:
+//   category = "Group Name"   ; sticky
+//   entry    = channel, "Label", type, "format" [, { enabledExpr } [, lag]]
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseDatalog(QTextStream &in) {
+    QString stickyCategory;
+    int order = 0;
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+        if (key == "category" && !vals.isEmpty()) {
+            stickyCategory = vals.value(0);
+        } else if (key == "entry" && vals.size() >= 2) {
+            DatalogField f;
+            f.channel  = vals.value(0);
+            f.label    = vals.value(1);
+            // vals[2] is the type (float/int) — ignored.
+            f.format   = vals.value(3);
+            if (vals.size() > 4) f.enabledExpr = vals.value(4);
+            if (vals.size() > 5) f.lagExpr     = vals.value(5);
+            f.category = stickyCategory;
+            f.order    = order++;
+            m_datalogFields.append(f);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C4: [GaugeConfigurations]
+//
+// Grammar:
+//   gaugeCategory = "Category Name"   ; sticky
+//   gaugeName = channel, "Title", "Units", lo, hi, loD, loW, hiW, hiD, vd, ld [, { activeExpr }]
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseGaugeConfigurations(QTextStream &in) {
+    QString stickyCategory;
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key  = line.left(eq).trimmed();
+        const QString rhs  = line.mid(eq + 1);
+        const QStringList vals = splitTopLevelCommas(rhs);
+
+        if (key == "gaugeCategory" && !vals.isEmpty()) {
+            stickyCategory = vals.value(0);
+            continue;
+        }
+        // Anything else is a gauge template named by `key`.
+        if (vals.size() < 10) continue;
+        GaugeTemplate g;
+        g.name           = key;
+        g.channel        = vals.value(0);
+        g.title          = vals.value(1);
+        g.unitsExpr      = vals.value(2);
+        g.loExpr         = vals.value(3);
+        g.hiExpr         = vals.value(4);
+        g.loDExpr        = vals.value(5);
+        g.loWExpr        = vals.value(6);
+        g.hiWExpr        = vals.value(7);
+        g.hiDExpr        = vals.value(8);
+        g.valueDecimals  = vals.value(9).toInt();
+        g.labelDecimals  = vals.value(10).toInt();
+        if (vals.size() > 11) g.activeExpr = vals.value(11);
+        g.category       = stickyCategory;
+        m_gaugeTemplates.insert(g.name, g);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C5: [CurveEditor]
+//
+// Grammar:
+//   curve = curveName, "Title"
+//     columnLabel = "X Label", "Y Label"
+//     xAxis = xMin, xMax, vDivs
+//     yAxis = yMin, yMax, hDivs
+//     xBins = arrayConst, channel [, readOnly]
+//     yBins = arrayConst [, channel] [, { activeExpr }]
+//     gauge = gaugeName
+//     size  = w, h
+//     showTextValues = true
+//     lineLabel = "..."
+//     topicHelp = "file://..."
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseCurveEditor(QTextStream &in) {
+    CurveEditor cur;
+    bool open = false;
+
+    auto commit = [&]() {
+        if (open && !cur.name.isEmpty()) m_curveEditors.insert(cur.name, cur);
+        cur = CurveEditor();
+        open = false;
+    };
+
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) { commit(); return; }
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+
+        if (key == "curve") {
+            commit();
+            cur.name  = vals.value(0);
+            cur.title = vals.value(1);
+            open = true;
+        } else if (!open) {
+            continue;
+        } else if (key == "columnLabel") {
+            cur.xLabel = vals.value(0);
+            cur.yLabel = vals.value(1);
+        } else if (key == "xAxis") {
+            cur.xMinExpr = vals.value(0);
+            cur.xMaxExpr = vals.value(1);
+            cur.xDivs    = vals.value(2).toInt();
+        } else if (key == "yAxis") {
+            cur.yMinExpr = vals.value(0);
+            cur.yMaxExpr = vals.value(1);
+            cur.yDivs    = vals.value(2).toInt();
+        } else if (key == "xBins") {
+            cur.xBins.arrayConstant   = vals.value(0);
+            cur.xBins.trackedChannel  = vals.value(1);
+            if (vals.size() > 2 && vals.value(2) == "readOnly") cur.xBins.readOnly = true;
+        } else if (key == "yBins") {
+            CurveAxis a;
+            a.arrayConstant  = vals.value(0);
+            for (int i = 1; i < vals.size(); ++i) {
+                const QString& v = vals.value(i);
+                if (v == "readOnly")           a.readOnly = true;
+                else if (v.startsWith('{'))    a.activeExpr = v;
+                else if (a.trackedChannel.isEmpty()) a.trackedChannel = v;
+            }
+            cur.yBins.append(a);
+        } else if (key == "gauge") {
+            cur.gauge = vals.value(0);
+        } else if (key == "topicHelp") {
+            cur.helpUrl = vals.value(0);
+        } else if (key == "size") {
+            cur.sizeExpr = vals.join(",");
+        } else if (key == "showTextValues") {
+            cur.showTextValues = (vals.value(0).toLower() == "true");
+        } else if (key == "lineLabel") {
+            if (!cur.yBins.isEmpty()) cur.yBins.last().lineLabel = vals.value(0);
+        }
+    }
+    commit();
+}
+
+// ---------------------------------------------------------------------------
+// C6: [Menu]
+//
+// Grammar:
+//   menuDialog = main | dialogName
+//   menu       = "Menu Label" [, { enableExpr } [, { visibleExpr }]]
+//   subMenu    = targetName, "Label" [, page [, { enableExpr }]]
+//   groupMenu  = "Group Label"
+//   groupChildMenu = targetName, "Label"
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseMenu(QTextStream &in) {
+    QString currentDialogName;
+    MenuDialog currentDialog;
+    MenuDef    currentMenu;
+    bool       inMenu = false;
+    MenuItem*  groupParent = nullptr;
+
+    auto commitDialog = [&]() {
+        if (inMenu) {
+            currentDialog.menus.append(currentMenu);
+            currentMenu = MenuDef();
+            inMenu = false;
+        }
+        if (!currentDialog.name.isEmpty()) {
+            m_menuDialogs.insert(currentDialog.name, currentDialog);
+        }
+        currentDialog = MenuDialog();
+        groupParent = nullptr;
+    };
+
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) { commitDialog(); return; }
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+
+        if (key == "menuDialog") {
+            commitDialog();
+            currentDialog.name = vals.value(0);
+            currentDialogName  = currentDialog.name;
+        } else if (key == "menu") {
+            if (inMenu) { currentDialog.menus.append(currentMenu); }
+            currentMenu = MenuDef();
+            currentMenu.label = vals.value(0);
+            if (vals.size() > 1) currentMenu.enableExpr  = vals.value(1);
+            if (vals.size() > 2) currentMenu.visibleExpr = vals.value(2);
+            inMenu = true;
+            groupParent = nullptr;
+        } else if (key == "subMenu" && inMenu) {
+            MenuItem item;
+            item.kind   = MenuItem::SubMenu;
+            item.target = vals.value(0);
+            item.label  = vals.value(1);
+            if (vals.size() > 2) item.page       = vals.value(2).toInt();
+            if (vals.size() > 3) item.enableExpr = vals.value(3);
+            currentMenu.items.append(item);
+            groupParent = nullptr;
+        } else if (key == "groupMenu" && inMenu) {
+            MenuItem item;
+            item.kind  = MenuItem::GroupMenu;
+            item.label = vals.value(0);
+            currentMenu.items.append(item);
+            groupParent = &currentMenu.items.last();
+        } else if (key == "groupChildMenu" && inMenu && groupParent) {
+            MenuItem item;
+            item.kind   = MenuItem::GroupChildMenu;
+            item.target = vals.value(0);
+            item.label  = vals.value(1);
+            groupParent->children.append(item);
+        }
+    }
+    commitDialog();
+}
+
+// ---------------------------------------------------------------------------
+// C7: [UserDefined]
+//
+// Grammar:
+//   dialog        = dialogName, "Title" [, xAxis|yAxis]
+//   field         = "Label" [, constantName [, { enableExpr } [, { visibleExpr }]]]
+//   panel         = subDialogName [, xAxis|yAxis]
+//   commandButton = "Label", controllerCmd [, { enableExpr } [, clickOnCloseIfEnabled]]
+//   gauge         = gaugeName
+//   indicatorPanel = panelName, ...
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseUserDefined(QTextStream &in) {
+    Dialog cur;
+    bool open = false;
+
+    auto commit = [&]() {
+        if (open && !cur.name.isEmpty()) m_dialogs.insert(cur.name, cur);
+        cur = Dialog();
+        open = false;
+    };
+
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) { commit(); return; }
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+
+        if (key == "dialog") {
+            commit();
+            cur.name  = vals.value(0);
+            cur.title = vals.value(1);
+            if (vals.size() > 2) cur.layoutAxis = vals.value(2);
+            open = true;
+        } else if (!open) {
+            continue;
+        } else if (key == "field") {
+            DialogItem it;
+            it.kind   = DialogItem::Field;
+            it.label  = vals.value(0);
+            it.target = vals.value(1);
+            if (vals.size() > 2) it.enableExpr  = vals.value(2);
+            if (vals.size() > 3) it.visibleExpr = vals.value(3);
+            cur.items.append(it);
+        } else if (key == "panel") {
+            DialogItem it;
+            it.kind   = DialogItem::Panel;
+            it.target = vals.value(0);
+            if (vals.size() > 1) it.label = vals.value(1);
+            cur.items.append(it);
+        } else if (key == "commandButton") {
+            DialogItem it;
+            it.kind   = DialogItem::CommandButton;
+            it.label  = vals.value(0);
+            it.target = vals.value(1);
+            if (vals.size() > 2) it.enableExpr = vals.value(2);
+            if (vals.size() > 3) it.clickOnCloseIfEnabled = (vals.value(3) == "true");
+            cur.items.append(it);
+        } else if (key == "gauge") {
+            DialogItem it;
+            it.kind   = DialogItem::Gauge;
+            it.target = vals.value(0);
+            cur.items.append(it);
+        } else if (key == "indicatorPanel") {
+            DialogItem it;
+            it.kind   = DialogItem::Indicator;
+            it.target = vals.value(0);
+            cur.items.append(it);
+        }
+    }
+    commit();
+}
+// ---------------------------------------------------------------------------
+// C8: [ConstantsExtensions]
+//
+// Grammar:
+//   requiresPowerCycle = constantName
+//   defaultValue       = constantName, 50.0
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseConstantsExtensions(QTextStream &in) {
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+        
+        if (key == "requiresPowerCycle" && vals.size() > 0) {
+            QString constName = vals.value(0);
+            if (m_constants.contains(constName)) {
+                m_constants[constName].requiresPowerCycle = true;
+            }
+        } else if (key == "defaultValue" && vals.size() > 1) {
+            // Future expansion: we can apply default overrides here
+            // Currently OS Tuner gets defaults from the firmware/MSQ.
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C9: [SettingContextHelp]
+//
+// Grammar:
+//   constantName = "Help text that appears in UI tooltips"
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseSettingContextHelp(QTextStream &in) {
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        QString help = line.mid(eq + 1).trimmed();
+        
+        if (help.startsWith('"') && help.endsWith('"')) {
+            help = help.mid(1, help.length() - 2);
+        }
+        
+        // TunerStudio replaces \n literals with actual newlines
+        help.replace("\\n", "\n");
+        help.replace("\\\"", "\"");
+
+        if (m_constants.contains(key)) {
+            // Don't overwrite mapping.yaml help text if it already exists, 
+            // though at this phase applyWorkspaceMetadata() hasn't run yet 
+            // so this will naturally act as a fallback to mapping.yaml!
+            m_constants[key].helpText = help;
+        } else if (m_pcVariables.contains(key)) {
+            m_pcVariables[key].helpText = help;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C10: [VeAnalyze]
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseVeAnalyze(QTextStream &in) {
+    VeAnalyzeMap currentMap;
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+
+        if (key == "veAnalyzeMap" && vals.size() >= 4) {
+            currentMap.veTable = vals.value(0).trimmed();
+            currentMap.targetTable = vals.value(1).trimmed();
+            currentMap.lambdaChannel = vals.value(2).trimmed();
+            currentMap.egoCorrectionChannel = vals.value(3).trimmed();
+            if (vals.size() > 4) currentMap.activeCondition = vals.value(4).trimmed();
+            
+            m_veAnalyzeMaps[currentMap.veTable] = currentMap;
+        } else if (key == "lambdaTargetTables") {
+            for (const QString& t : vals) currentMap.lambdaTargetTables.append(t.trimmed());
+            if (!currentMap.veTable.isEmpty()) m_veAnalyzeMaps[currentMap.veTable] = currentMap;
+        } else if (key == "filter" && vals.size() >= 1) {
+            AnalyzeFilter f;
+            f.name = vals.value(0).trimmed();
+            if (vals.size() > 1) {
+                f.label = vals.value(1).trimmed();
+                if (f.label.startsWith('"') && f.label.endsWith('"')) f.label = f.label.mid(1, f.label.length()-2);
+            }
+            if (vals.size() > 2) f.channel = vals.value(2).trimmed();
+            if (vals.size() > 3) f.op = vals.value(3).trimmed();
+            if (vals.size() > 4) f.value = vals.value(4).trimmed();
+            if (vals.size() > 5) f.activeExpr = vals.value(5).trimmed();
+            if (vals.size() > 6) f.enabledByDefault = (vals.value(6).trimmed().toLower() == "true");
+            
+            currentMap.filters.append(f);
+            if (!currentMap.veTable.isEmpty()) m_veAnalyzeMaps[currentMap.veTable] = currentMap;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C11: [WueAnalyze]
+// ---------------------------------------------------------------------------
+void ECUDefinition::parseWueAnalyze(QTextStream &in) {
+    WueAnalyzeMap currentMap;
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(';')) continue;
+        if (line.startsWith('[')) return;
+        if (line.startsWith('#')) { processDirective(line); continue; }
+        if (shouldSkipLine()) continue;
+
+        line = expandDefines(line);
+        const int eq = line.indexOf('=');
+        if (eq < 0) continue;
+        const QString key = line.left(eq).trimmed();
+        const QStringList vals = splitTopLevelCommas(line.mid(eq + 1));
+
+        if (key == "wueAnalyzeMap" && vals.size() >= 7) {
+            currentMap.wueCurveName = vals.value(0).trimmed();
+            currentMap.afrTempCompensationCurve = vals.value(1).trimmed();
+            currentMap.targetTable = vals.value(2).trimmed();
+            currentMap.lambdaChannel = vals.value(3).trimmed();
+            currentMap.coolantTempChannel = vals.value(4).trimmed();
+            currentMap.wueChannel = vals.value(5).trimmed();
+            currentMap.egoCorrectionChannel = vals.value(6).trimmed();
+            if (vals.size() > 7) currentMap.activeCondition = vals.value(7).trimmed();
+            
+            m_wueAnalyzeMaps[currentMap.wueCurveName] = currentMap;
+        } else if (key == "lambdaTargetTables") {
+            for (const QString& t : vals) currentMap.lambdaTargetTables.append(t.trimmed());
+            if (!currentMap.wueCurveName.isEmpty()) m_wueAnalyzeMaps[currentMap.wueCurveName] = currentMap;
+        } else if (key == "filter" && vals.size() >= 1) {
+            AnalyzeFilter f;
+            f.name = vals.value(0).trimmed();
+            if (vals.size() > 1) {
+                f.label = vals.value(1).trimmed();
+                if (f.label.startsWith('"') && f.label.endsWith('"')) f.label = f.label.mid(1, f.label.length()-2);
+            }
+            if (vals.size() > 2) f.channel = vals.value(2).trimmed();
+            if (vals.size() > 3) f.op = vals.value(3).trimmed();
+            if (vals.size() > 4) f.value = vals.value(4).trimmed();
+            if (vals.size() > 5) f.activeExpr = vals.value(5).trimmed();
+            if (vals.size() > 6) f.enabledByDefault = (vals.value(6).trimmed().toLower() == "true");
+            
+            currentMap.filters.append(f);
+            if (!currentMap.wueCurveName.isEmpty()) m_wueAnalyzeMaps[currentMap.wueCurveName] = currentMap;
+        }
+    }
+}
+

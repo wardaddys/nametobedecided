@@ -64,3 +64,12 @@ tunerpro_all_code*.md
 gather_code.py
 download_fonts.py
 infoforskill.md
+
+# Build logs, compile commands, and temp files
+*.txt
+*.tmp
+compile_commands.json
+*.log
+error.log
+response.txt
+erros.md

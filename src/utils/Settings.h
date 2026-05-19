@@ -51,6 +51,17 @@ public:
   static QString getLastEcuDefPath();
   static void setLastEcuDefPath(const QString &path);
 
+  // === Workspaces Preview (D2) ===
+  // Off by default. When true, MainWindow shows a "Workspaces (Preview)" tab
+  // that hosts the unified-settings WorkspaceContainer alongside the existing
+  // ECU Settings UI.
+  static bool getWorkspacesPreviewEnabled();
+  static void setWorkspacesPreviewEnabled(bool enabled);
+
+  // === Onboarding (Phase A) ===
+  static bool getFirstRunCompleted();
+  static void setFirstRunCompleted(bool completed);
+
 private:
   static QSettings *m_settings;
 };

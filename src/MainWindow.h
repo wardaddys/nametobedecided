@@ -22,6 +22,8 @@ class ECUSettingsManager;
 class ToothLoggerWidget;
 class ProjectManager;
 class UpdateChecker;
+class ProjectWizardOverlay;
+class ProductTourOverlay;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -41,6 +43,8 @@ private slots:
   void onConnectionStatusChanged(ConnectionStatus status);
 
   // Slots
+  void onNewProjectClicked();
+  void onProjectCreated(const QString &name, const QString &path);
   void onOpenProject(); // Added for ProjectLoader
   void onSettingsClicked();
   void onAboutClicked();
@@ -62,6 +66,7 @@ protected:
   void mousePressEvent(QMouseEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
+  void paintEvent(QPaintEvent *event) override;
 
 private:
   QPoint m_dragPosition;
@@ -82,6 +87,7 @@ private:
   QTabWidget *m_tabWidget;
 
   // Header Widgets
+  QPushButton *m_newProjectButton;
   QPushButton *m_projectButton; // Changed from QLabel
   QLabel *m_ecuStatusLabel;
   QPushButton *m_liveTuningButton; // Changed from QLabel to QPushButton
@@ -89,6 +95,7 @@ private:
   QPushButton *m_saveButton;
   QComboBox *m_readEcuCombo;
   QPushButton *m_settingsButton;
+  QPushButton *m_helpButton;
 
   // Status Bar Labels
   QLabel *m_rpmLabel;
@@ -111,8 +118,13 @@ private:
   SettingsDropdown *m_settingsDropdown;
   ToothLoggerWidget *m_toothLoggerWidget;
 
+  ProjectWizardOverlay *m_projectWizard;
+  ProductTourOverlay *m_tourOverlay = nullptr;
+
   // State
   bool m_liveTuningEnabled = false;
+  
+  void startProductTour();
 };
 
 #endif // MAINWINDOW_H

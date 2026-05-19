@@ -32,6 +32,11 @@ public slots:
   void setSerialManager(SerialManager *serial); // Added
   void onDefinitionsLoaded();
 
+  // === Getters for Onboarding/ProductTour (Phase A) ===
+  QWidget* getGraphContainer() const { return m_graphContainer; }
+  QTabWidget* getMainViewTabs() const { return m_mainViewTabs; }
+  QComboBox* getTableSelector() const { return m_tableSelector; }
+
 private slots:
   void onTableSelectionChanged(int index);
   void onSearchTextChanged(const QString &text);

@@ -17,16 +17,47 @@
 #include "utils/Logger.h"
 #include "utils/Settings.h"
 #include "core/ECUSettingsManager.h"
+#include "core/version.h"
 #include "core/ProjectManager.h"
 #include "core/UpdateChecker.h"
+// D2: Workspaces preview tab.
+#include "widgets/workspaces/WorkspaceContainer.h"
+#include "widgets/workspaces/FuelingWorkspace.h"
+#include "widgets/workspaces/IgnitionWorkspace.h"
 #include "widgets/AllTablesWidget.h"
 #include "widgets/DashboardWidget.h"
 #include "widgets/ECUSettingsWidget.h"
 #include "widgets/LoggingWidget.h"
 #include "widgets/SettingsDropdown.h"
 #include "widgets/ToothLoggerWidget.h"
+#include "widgets/ProjectWizardOverlay.h"
 #include "dialogs/ConnectionDialog.h"
+#include "widgets/onboarding/ProductTourOverlay.h"
+#include "widgets/onboarding/TourStep.h"
 #include <QFileDialog>
+#include <QFileIconProvider>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFileInfo>
+
+class ProjectIconProvider : public QFileIconProvider {
+public:
+    ProjectIconProvider() {
+        m_projectIcon = QIcon(":/icons/app_icon.png");
+    }
+    
+    QIcon icon(const QFileInfo &info) const override {
+        if (info.isDir()) {
+            QDir dir(info.absoluteFilePath());
+            if (dir.exists("project.properties") || dir.exists("projectCfg")) {
+                return m_projectIcon;
+            }
+        }
+        return QFileIconProvider::icon(info);
+    }
+private:
+    QIcon m_projectIcon;
+};
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_serialManager(new SerialManager(this)),
@@ -34,7 +65,7 @@ MainWindow::MainWindow(QWidget *parent)
       m_settingsDropdown(nullptr),
       m_liveTuningEnabled(false) {
   // === Section 7.1: Fix window title ===
-  setWindowTitle("TunerStudio OS — Open-Source ECU Tuning");
+  setWindowTitle("OS Tuner — Open-Source ECU Tuning");
   resize(1280, 800);
   
   // Set frameless window hint for custom titlebar
@@ -49,12 +80,15 @@ MainWindow::MainWindow(QWidget *parent)
   connect(m_projectManager, &ProjectManager::projectLoaded, [this](const QString &name) {
       m_projectButton->setText("Project: " + name);
       QMessageBox::information(this, "Project Loaded", "Successfully loaded project: " + name);
+      if (!Settings::getFirstRunCompleted()) {
+          startProductTour();
+      }
   });
   connect(m_projectManager, &ProjectManager::projectLoadFailed, [this](const QString &error) {
       QMessageBox::critical(this, "Project Load Error", "Failed to load project: " + error);
   });
 
-  m_updateChecker = new UpdateChecker("1.0.0-alpha", this);
+  m_updateChecker = new UpdateChecker(OSTUNER_VERSION_STRING, this);
   connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
   connect(m_updateChecker, &UpdateChecker::upToDate, this, &MainWindow::onUpToDate);
   connect(m_updateChecker, &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
@@ -104,49 +138,80 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 void MainWindow::postInit() {
-  QString projPath = Settings::getLastEcuDefPath(); // We might repurpose this for project path
-  bool loaded = false;
-
-  if (!projPath.isEmpty() && QDir(projPath).exists()) {
-    if (m_projectManager->loadProject(projPath)) {
-      Logger::info("Project loaded from settings: " + projPath);
-      loaded = true;
-    } else {
-      Logger::warning("Failed to load last used Project directory: " + projPath);
-    }
-  }
-
-  if (!loaded) {
+  // Auto-restore the last opened project.
+  //
+  // Bug fix: previously this method always ran showEcuDefError() on failure,
+  // even when ProjectManager::projectLoadFailed had *already* shown a
+  // critical-error QMessageBox (MainWindow ctor wires that signal at line 59).
+  // That stacked two dialogs on top of each other every time the saved path
+  // pointed at a folder that no longer had a valid INI — which is exactly
+  // the "Failed to load project" + "No valid project is loaded" pair the
+  // user reported. We now stay silent on a failed auto-restore (the ctor's
+  // signal handler covers user feedback) and only prompt the user to pick a
+  // project when there was no saved path at all.
+  const QString projPath = Settings::getLastEcuDefPath();
+  if (projPath.isEmpty()) {
     showEcuDefError();
+    return;
+  }
+  if (!QDir(projPath).exists()) {
+    Logger::warning("Last project path no longer exists: " + projPath);
+    Settings::setLastEcuDefPath("");
+    showEcuDefError();
+    return;
+  }
+  if (m_projectManager->loadProject(projPath)) {
+    Logger::info("Project loaded from settings: " + projPath);
+  } else {
+    // ProjectManager already emitted projectLoadFailed → critical dialog.
+    // Clear the stale setting so the next launch starts clean.
+    Logger::warning("Failed to load last used Project directory: " + projPath);
+    Settings::setLastEcuDefPath("");
   }
 }
 
 void MainWindow::showEcuDefError() {
   QMessageBox::warning(
       this, "Project Required",
-      "No valid TunerStudio Project is loaded.\n"
-      "Please select a TunerStudio project directory.");
+      "No valid project is loaded.\n"
+      "Please select an ECU project directory.");
 
   onOpenProject();
 }
 
 void MainWindow::onOpenProject() {
-  QString path = QFileDialog::getExistingDirectory(
-      this, "Select TunerStudio Project Folder", QString(), QFileDialog::ShowDirsOnly);
+  QString defaultPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/TunerStudioProjects";
+  if (!QDir(defaultPath).exists()) {
+      defaultPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  }
 
-  if (!path.isEmpty()) {
+  QFileDialog dialog(this, "Select ECU Project Folder", defaultPath);
+  dialog.setFileMode(QFileDialog::Directory);
+  dialog.setOption(QFileDialog::ShowDirsOnly, true);
+  dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+  
+  ProjectIconProvider *iconProvider = new ProjectIconProvider;
+  dialog.setIconProvider(iconProvider);
+
+  if (dialog.exec() == QDialog::Accepted) {
+    QString path = dialog.selectedFiles().first();
     if (m_projectManager->loadProject(path)) {
       Settings::setLastEcuDefPath(path);
     } else {
       showEcuDefError(); // Retry
     }
   }
+  delete iconProvider;
 }
 
 MainWindow::~MainWindow() {
-  // Disconnect from ECU cleanly before any members are destroyed.
-  // This prevents pending timers or callbacks from firing on dead objects.
+  // [BUG-SHUTDOWN] Sever ALL signal connections from SerialManager to this
+  // MainWindow BEFORE any child-widget destructors run. Without this,
+  // SerialManager::~SerialManager() → disconnectFromDevice() emits
+  // connectionStatusChanged / disconnected into a half-destroyed MainWindow,
+  // triggering Qt's "Called object is not of the correct type" assert.
   if (m_serialManager) {
+    disconnect(m_serialManager, nullptr, this, nullptr);
     m_serialManager->disconnectFromDevice();
   }
 }
@@ -158,61 +223,63 @@ void MainWindow::setupUi() {
   mainLayout->setContentsMargins(0, 0, 0, 0);
   mainLayout->setSpacing(0);
   setCentralWidget(centralWidget);
+  
+  // Create Wizard Overlay (covers central widget)
+  m_projectWizard = new ProjectWizardOverlay(centralWidget);
+  m_projectWizard->setSerialManager(m_serialManager);
+  connect(m_projectWizard, &ProjectWizardOverlay::projectCreated, this, &MainWindow::onProjectCreated);
+  m_projectWizard->raise(); // ensure it's on top
 
-  // 1. Custom Title Bar Area
-  QWidget *titleBar = new QWidget(this);
-  titleBar->setObjectName("TitleBar");
-  QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
-  titleLayout->setContentsMargins(16, 0, 16, 0);
-  titleLayout->setSpacing(8);
+  // 1. Consolidated Header Bar (Title + Tools)
+  QWidget *headerBar = new QWidget(this);
+  headerBar->setObjectName("HeaderBar");
+  QHBoxLayout *headerLayout = new QHBoxLayout(headerBar);
+  headerLayout->setContentsMargins(16, 0, 16, 0);
+  headerLayout->setSpacing(12);
 
-  QLabel *appNameLabel = new QLabel("TunerStudio OS", this);
+  // -- Left Section: Brand & Project --
+  QLabel *appNameLabel = new QLabel("OS TUNER", this);
   appNameLabel->setObjectName("TitleBarAppName");
   
   QLabel *projectNamePill = new QLabel("No Project", this);
   projectNamePill->setObjectName("ProjectNamePill");
   projectNamePill->setProperty("unsaved", false);
-  
-  QPushButton *closeBtn = new QPushButton(this);
-  closeBtn->setObjectName("TitleBarClose");
-  connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
-  
-  QPushButton *minBtn = new QPushButton(this);
-  minBtn->setObjectName("TitleBarMinimize");
-  connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
-  
-  QPushButton *maxBtn = new QPushButton(this);
-  maxBtn->setObjectName("TitleBarMaximize");
-  connect(maxBtn, &QPushButton::clicked, [this]() {
-    isMaximized() ? showNormal() : showMaximized();
-  });
 
-  titleLayout->addWidget(appNameLabel);
-  titleLayout->addStretch();
-  titleLayout->addWidget(projectNamePill);
-  titleLayout->addStretch();
-  titleLayout->addWidget(minBtn);
-  titleLayout->addWidget(maxBtn);
-  titleLayout->addWidget(closeBtn);
+  headerLayout->addWidget(appNameLabel);
+  headerLayout->addWidget(projectNamePill);
+  headerLayout->addSpacing(20);
 
-  mainLayout->addWidget(titleBar);
+  // -- Center Section: Primary Actions --
+  m_newProjectButton = new QPushButton("New Project", this);
+  m_newProjectButton->setObjectName("SaveButton");
+  connect(m_newProjectButton, &QPushButton::clicked, this, &MainWindow::onNewProjectClicked);
 
-  // 2. Toolbar
-  QWidget *toolBar = new QWidget(this);
-  toolBar->setObjectName("ToolBar");
-  QHBoxLayout *toolbarLayout = new QHBoxLayout(toolBar);
-  toolbarLayout->setContentsMargins(16, 0, 16, 0);
-  toolbarLayout->setSpacing(12);
+  m_projectButton = new QPushButton("Open Project", this);
+  m_projectButton->setObjectName("SaveButton");
+  connect(m_projectButton, &QPushButton::clicked, this, &MainWindow::onOpenProject);
+
+  m_saveButton = new QPushButton("Save", this);
+  m_saveButton->setObjectName("SaveButton");
+  m_saveButton->setProperty("hasChanges", false);
+  connect(m_saveButton, &QPushButton::clicked, this, &MainWindow::onSaveClicked);
 
   m_readEcuCombo = new QComboBox(this);
-  m_readEcuCombo->setObjectName("ComPortSelector"); // Need COM port selector eventually, repurposing readEcuCombo temporarily
-  m_readEcuCombo->addItems({"Read/Write ECU", "Read ECU", "Write ECU"});
+  m_readEcuCombo->setObjectName("ComPortSelector");
+  m_readEcuCombo->addItems({"Sync ECU", "Read All", "Write All"});
+  connect(m_readEcuCombo, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReadECUChanged);
 
+  headerLayout->addWidget(m_newProjectButton);
+  headerLayout->addWidget(m_projectButton);
+  headerLayout->addWidget(m_saveButton);
+  headerLayout->addWidget(m_readEcuCombo);
+  headerLayout->addStretch();
+
+  // -- Right Section: Status, Help, Settings & Controls --
   m_ecuStatusLabel = new QLabel("OFFLINE", this);
   m_ecuStatusLabel->setObjectName("EcuStatusPill");
   m_ecuStatusLabel->setProperty("connected", false);
 
-  m_liveTuningButton = new QPushButton("LIVE TUNING", this);
+  m_liveTuningButton = new QPushButton("LIVE", this);
   m_liveTuningButton->setObjectName("LiveTuningToggle");
   m_liveTuningButton->setProperty("active", false);
   m_liveTuningButton->setCursor(Qt::PointingHandCursor);
@@ -223,32 +290,45 @@ void MainWindow::setupUi() {
   m_connectButton->setProperty("connected", false);
   connect(m_connectButton, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
 
-  m_saveButton = new QPushButton("Save Details", this);
-  m_saveButton->setObjectName("SaveButton");
-  m_saveButton->setProperty("hasChanges", false);
-  connect(m_saveButton, &QPushButton::clicked, this, &MainWindow::onSaveClicked);
-  connect(m_readEcuCombo, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReadECUChanged);
-
-  m_projectButton = new QPushButton("Open Project", this);
-  m_projectButton->setObjectName("SaveButton"); // Borrowing style
-  connect(m_projectButton, &QPushButton::clicked, this, &MainWindow::onOpenProject);
+  m_helpButton = new QPushButton(this);
+  m_helpButton->setObjectName("HelpIconButton"); // Use custom objectName
+  m_helpButton->setText("?");
+  m_helpButton->setToolTip("Help & Updates");
+  connect(m_helpButton, &QPushButton::clicked, this, &MainWindow::onAboutClicked);
 
   m_settingsButton = new QPushButton(this);
   m_settingsButton->setObjectName("SettingsIconButton");
   m_settingsButton->setText("⚙");
   connect(m_settingsButton, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
 
-  toolbarLayout->addWidget(m_projectButton);
-  toolbarLayout->addWidget(m_saveButton);
-  toolbarLayout->addWidget(m_readEcuCombo);
-  toolbarLayout->addStretch();
-  toolbarLayout->addWidget(m_ecuStatusLabel);
-  toolbarLayout->addWidget(m_liveTuningButton);
-  toolbarLayout->addSpacing(16);
-  toolbarLayout->addWidget(m_connectButton);
-  toolbarLayout->addWidget(m_settingsButton);
+  // Window Controls
+  QPushButton *minBtn = new QPushButton(this);
+  minBtn->setObjectName("TitleBarMinimize");
+  connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
+  
+  QPushButton *maxBtn = new QPushButton(this);
+  maxBtn->setObjectName("TitleBarMaximize");
+  connect(maxBtn, &QPushButton::clicked, [this]() {
+    isMaximized() ? showNormal() : showMaximized();
+  });
 
-  mainLayout->addWidget(toolBar);
+  QPushButton *closeBtn = new QPushButton(this);
+  closeBtn->setObjectName("TitleBarClose");
+  connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
+
+  headerLayout->addWidget(m_ecuStatusLabel);
+  headerLayout->addWidget(m_liveTuningButton);
+  headerLayout->addSpacing(8);
+  headerLayout->addWidget(m_connectButton);
+  headerLayout->addSpacing(8);
+  headerLayout->addWidget(m_helpButton);
+  headerLayout->addWidget(m_settingsButton);
+  headerLayout->addSpacing(8);
+  headerLayout->addWidget(minBtn);
+  headerLayout->addWidget(maxBtn);
+  headerLayout->addWidget(closeBtn);
+
+  mainLayout->addWidget(headerBar);
 
   // 3. Navigation Tabs
   m_tabWidget = new QTabWidget(this);
@@ -259,6 +339,7 @@ void MainWindow::setupUi() {
   // The 9 tuning widgets are created inside ECUSettingsWidget — NOT here.
   m_dashboard = new DashboardWidget(this);
   m_dashboard->setSettingsManager(m_ecuSettingsManager);  // Fix 2: wire offline scalar updates
+  m_dashboard->setSerialManager(m_serialManager);         // Wire serial for calibration uploads
 
   m_allTablesWidget = new AllTablesWidget(m_ecuSettingsManager, this);
   m_allTablesWidget->setSerialManager(m_serialManager);
@@ -268,7 +349,7 @@ void MainWindow::setupUi() {
   // Connect Logging Widget
   connect(m_loggingWidget, &LoggingWidget::startRequested, [this]() {
     if (m_loggingManager->startLogging()) {
-      m_loggingWidget->setStatus(true, "Documents/TunerPro/Logs");
+      m_loggingWidget->setStatus(true, "Documents/OSTuner/Logs");
     }
   });
   connect(m_loggingWidget, &LoggingWidget::stopRequested, [this]() {
@@ -299,18 +380,26 @@ void MainWindow::setupUi() {
   m_toothLoggerWidget = new ToothLoggerWidget(this);
   m_tabWidget->addTab(m_toothLoggerWidget, "Tooth Logger");
 
+  // D2: Workspaces (Preview) tab. Opt-in via Settings flag — default off so
+  // the existing ECU Settings UI remains the canonical edit surface.
+  if (Settings::getWorkspacesPreviewEnabled()) {
+    auto* workspaces = new WorkspaceContainer(this);
+    auto* fueling   = new FuelingWorkspace(this);
+    auto* ignition  = new IgnitionWorkspace(this);
+    fueling->setSettingsManager(m_ecuSettingsManager);
+    ignition->setSettingsManager(m_ecuSettingsManager);
+    workspaces->registerWorkspace(fueling);
+    workspaces->registerWorkspace(ignition);
+    m_tabWidget->addTab(workspaces, "Workspaces (Preview)");
+  }
+
   mainLayout->addWidget(m_tabWidget);
 
   // 3. Status Bar
   createStatusBar();
 
-  // 4. Menus
-  QMenu *helpMenu = menuBar()->addMenu("Help");
-  QAction *aboutAct = helpMenu->addAction("About TunerStudio OS");
-  connect(aboutAct, &QAction::triggered, this, &MainWindow::onAboutClicked);
-
-  QAction *updateAct = helpMenu->addAction("Check for Updates...");
-  connect(updateAct, &QAction::triggered, this, &MainWindow::onManualUpdateCheck);
+  // 4. Removed separate QMenuBar to prevent extra top bar
+  // Help and Updates are now accessible via the '?' icon button in the header.
 }
 
 void MainWindow::createStatusBar() {
@@ -369,19 +458,15 @@ void MainWindow::onConnectionStatusChanged(ConnectionStatus status) {
     if (m_ecuSettingsWidget) {
       m_ecuSettingsWidget->setSerialManager(m_serialManager);
     }
+    if (m_toothLoggerWidget) {
+      m_toothLoggerWidget->setSerialManager(m_serialManager);
+    }
 
     // Start data polling
     m_serialManager->startDataPolling(33); // 30Hz for responsive movement
 
-    // Read all ECU pages after a brief delay to let connection stabilize
-    QPointer<MainWindow> guard(this);
-    QTimer::singleShot(500, this, [guard]() {
-      if (!guard) return; // MainWindow already destroyed
-      if (guard->m_ecuSettingsWidget && guard->m_serialManager && guard->m_serialManager->isConnected()) {
-        guard->m_ecuSettingsWidget->readAllFromECU();
-        Logger::info("Reading all ECU configuration pages after connect...");
-      }
-    });
+    // [FIX-QUEUE] Do NOT auto-read pages on connect — they flood the command
+    // queue and starve RT polling. User can trigger manually via toolbar.
   }
 }
 
@@ -426,49 +511,44 @@ void MainWindow::updateRealtimeData(const RealTimeData &data) {
     m_dashboard->updateData(data);
   }
 
-  // 2. Update Status Bar Labels
+  // 2. Update Status Bar Labels (prefix is already in the separate QLabel from addStatusField)
   if (m_rpmLabel)
-    m_rpmLabel->setText(QString("RPM: %1").arg(data.getRPM()));
+    m_rpmLabel->setText(QString::number(data.getRPM()));
   if (m_mapLabel)
-    m_mapLabel->setText(QString("MAP: %1 kPa").arg(data.getMAP(), 0, 'f', 1));
+    m_mapLabel->setText(QString("%1 kPa").arg(data.getMAP(), 0, 'f', 1));
   if (m_afrLabel)
-    m_afrLabel->setText(QString("AFR: %1").arg(data.getAFR(), 0, 'f', 1));
+    m_afrLabel->setText(QString::number(data.getAFR(), 'f', 1));
   if (m_ectLabel)
-    m_ectLabel->setText(QString("ECT: %1°C").arg(data.getCoolant(), 0, 'f', 0));
+    m_ectLabel->setText(QString("%1°C").arg(data.getCoolant(), 0, 'f', 0));
 
   // Boost = MAP - atmospheric (101.3 kPa), converted to psi
   if (m_boostLabel) {
     double boostKpa = data.getMAP() - 101.3;
     double boostPsi = boostKpa * 0.14504;
-    m_boostLabel->setText(QString("Boost: %1 psi").arg(boostPsi, 0, 'f', 1));
+    m_boostLabel->setText(QString("%1 psi").arg(boostPsi, 0, 'f', 1));
   }
 
   // Vehicle Speed
   if (m_speedLabel) {
-    m_speedLabel->setText(QString("Speed: %1 km/h").arg(data.getVSS()));
+    m_speedLabel->setText(QString("%1 km/h").arg(data.getVSS()));
   }
 
   // Gear
   if (m_gearLabel) {
-    m_gearLabel->setText(QString("Gear: %1").arg(data.gear == 0 ? "N" : QString::number(data.gear)));
+    m_gearLabel->setText(data.gear == 0 ? "N" : QString::number(data.gear));
   }
 
   // Oil Temperature - Not in standard Speeduino
   if (m_oilTLabel)
-    m_oilTLabel->setText("Oil Temp: N/A");
+    m_oilTLabel->setText("N/A");
 
   // Oil Pressure - Not in standard Speeduino
   if (m_oilPLabel)
-    m_oilPLabel->setText("Oil P: N/A");
+    m_oilPLabel->setText("N/A");
 
   // Fuel Pressure - Not in standard Speeduino
   if (m_fuelPLabel)
-    m_fuelPLabel->setText("Fuel P: N/A");
-
-  // === Section 2.1: Forward to Dashboard ===
-  if (m_dashboard) {
-    m_dashboard->updateData(data);
-  }
+    m_fuelPLabel->setText("N/A");
 
   // === Section 5.3: Forward to Settings Widget ===
   if (m_ecuSettingsWidget) {
@@ -592,8 +672,15 @@ void MainWindow::onDisconnectClicked() {
 }
 
 void MainWindow::onAboutClicked() {
-  QMessageBox::about(this, "About TunerStudio OS",
-                     "TunerStudio OS Version 2.0\n\nOpen-source tuning software for Speeduino ECU.");
+  QMenu helpMenu(this);
+  helpMenu.addAction("About OS Tuner", this, [this]() {
+      QMessageBox::about(this, "About OS Tuner",
+                       "OS Tuner Version 0.5.0-alpha\n\nOpen-source tuning software for Speeduino ECU.");
+  });
+  helpMenu.addAction("Replay Onboarding Tour", this, &MainWindow::startProductTour);
+  helpMenu.addAction("Check for Updates...", this, &MainWindow::onManualUpdateCheck);
+  
+  helpMenu.exec(QCursor::pos());
 }
 
 // === Section 2.3: Demo Mode ===
@@ -667,6 +754,9 @@ void MainWindow::onDisconnected() {
 }
 
 // === Section 5.3: Live Tuning Toggle ===
+// BUG-B fix: both branches null-check m_allTablesWidget before calling
+// setLiveTuningEnabled. The original code only guarded the enable path; the
+// disable path would crash on shutdown teardown when the widget had been freed.
 void MainWindow::onLiveTuningToggled() {
   m_liveTuningEnabled = !m_liveTuningEnabled;
 
@@ -676,7 +766,7 @@ void MainWindow::onLiveTuningToggled() {
     m_liveTuningButton->style()->unpolish(m_liveTuningButton);
     m_liveTuningButton->style()->polish(m_liveTuningButton);
 
-    if (m_allTablesWidget)
+    if (m_allTablesWidget) // BUG-B fix: guard
       m_allTablesWidget->setLiveTuningEnabled(true);
 
   } else {
@@ -685,6 +775,7 @@ void MainWindow::onLiveTuningToggled() {
     m_liveTuningButton->style()->unpolish(m_liveTuningButton);
     m_liveTuningButton->style()->polish(m_liveTuningButton);
 
+    if (m_allTablesWidget) // BUG-B fix: guard (this branch was missing pre-Phase 0)
       m_allTablesWidget->setLiveTuningEnabled(false);
   }
 }
@@ -699,7 +790,7 @@ void MainWindow::onUpdateAvailable(const QString& latestVersion, const QString& 
         // if we want to mimic a simple check
     }
     QMessageBox::StandardButton reply = QMessageBox::question(this, "Update Available",
-        QString("A new version of TunerStudio OS (v%1) is available.\nWould you like to download it now?").arg(latestVersion),
+        QString("A new version of OS Tuner (v%1) is available.\nWould you like to download it now?").arg(latestVersion),
         QMessageBox::Yes | QMessageBox::No);
     
     if (reply == QMessageBox::Yes) {
@@ -709,21 +800,44 @@ void MainWindow::onUpdateAvailable(const QString& latestVersion, const QString& 
 
 void MainWindow::onUpToDate(bool silentMode) {
     if (!silentMode) {
-        QMessageBox::information(this, "Up to Date", "You are running the latest version of TunerStudio OS.");
+        QMessageBox::information(this, "Up to Date", "You are running the latest version of OS Tuner.");
     }
 }
 
 // === Custom Titlebar Window Dragging ===
 void MainWindow::mousePressEvent(QMouseEvent *event) {
   if (event->button() == Qt::LeftButton) {
-    // Check if click is within the top titlebar area (assume height 36)
-    QWidget* titleBar = findChild<QWidget*>("TitleBar");
-    if (titleBar && titleBar->geometry().contains(event->pos())) {
+    // Check if click is within the top header area (assume height 48)
+    QWidget* headerBar = findChild<QWidget*>("HeaderBar");
+    if (headerBar && headerBar->geometry().contains(event->pos())) {
       m_dragging = true;
       m_dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
       event->accept();
     }
   }
+}
+
+void MainWindow::paintEvent(QPaintEvent *event) {
+    Q_UNUSED(event);
+}
+
+void MainWindow::onNewProjectClicked() {
+    if (m_projectWizard) {
+        m_projectWizard->resize(centralWidget()->size());
+        m_projectWizard->startWizard();
+    }
+}
+
+void MainWindow::onProjectCreated(const QString &name, const QString &path) {
+    // Save to settings
+    Settings::setLastEcuDefPath(path);
+    
+    // Actually load the project (which triggers the projectLoaded signal to update UI)
+    if (m_projectManager->loadProject(path)) {
+        Logger::info("Created and loaded new project: " + name + " at " + path);
+    } else {
+        QMessageBox::warning(this, "Project Error", "Project was created but failed to load.");
+    }
 }
 
 void MainWindow::mouseMoveEvent(QMouseEvent *event) {
@@ -744,4 +858,91 @@ void MainWindow::onUpdateCheckFailed(const QString& errorMessage, bool silentMod
     if (!silentMode) {
         QMessageBox::warning(this, "Update Check Failed", errorMessage);
     }
+}
+
+void MainWindow::startProductTour() {
+    if (!m_tourOverlay) {
+        m_tourOverlay = new ProductTourOverlay(this->centralWidget());
+        connect(m_tourOverlay, &ProductTourOverlay::tourCompleted, this, []() {
+            Settings::setFirstRunCompleted(true);
+            QMessageBox::information(nullptr, "Tour Completed", 
+                "Want the full guide on tuning? Click Help (?) -> Learn to Tune. Otherwise, you're ready!");
+        });
+        connect(m_tourOverlay, &ProductTourOverlay::tourSkipped, this, []() {
+            Settings::setFirstRunCompleted(true);
+        });
+    }
+
+    // Step 1: Dashboard gauges row (RPM Gauge)
+    TourStep s1;
+    s1.anchorWidget = m_dashboard->getRpmGauge();
+    s1.title = "Live Engine Sensors";
+    s1.body = "These are your live engine sensors. Once your ECU is connected, they update 100× a second.";
+    s1.padding = 12;
+    s1.onShow = [this]() {
+        m_tabWidget->setCurrentIndex(0); // Switch to Dashboard tab
+    };
+    m_tourOverlay->addStep(s1);
+
+    // Step 2: Deliberately-not-calibrated gauge (MAP Gauge)
+    TourStep s2;
+    s2.anchorWidget = m_dashboard->getMapGauge();
+    s2.title = "Sensor Calibration Alert";
+    s2.body = "If a gauge glows orange, that sensor isn't calibrated yet. Click it to set it up (e.g. TPS, MAP, Temp).";
+    s2.padding = 12;
+    s2.onShow = [this]() {
+        m_tabWidget->setCurrentIndex(0); // Switch to Dashboard tab
+    };
+    m_tourOverlay->addStep(s2);
+
+    // Step 3: Workspace tabs
+    TourStep s3;
+    QWidget *tabBar = m_tabWidget->findChild<QWidget*>("qt_tabwidget_tabbar");
+    s3.anchorWidget = tabBar ? tabBar : m_tabWidget;
+    s3.title = "Workspace Navigation";
+    s3.body = "Fueling, Ignition, Sensors — this is where you tune. Most of your time will be in Fueling.";
+    s3.padding = 8;
+    s3.onShow = [this]() {
+        m_tabWidget->setCurrentIndex(0); // Switch to Dashboard tab
+    };
+    m_tourOverlay->addStep(s3);
+
+    // Step 4: The 3D fuel map
+    TourStep s4;
+    s4.anchorWidget = m_allTablesWidget->getGraphContainer();
+    s4.title = "3D VE Table Visualization";
+    s4.body = "This is a VE table. Each cell tells the ECU how much air the engine is breathing at that RPM and load.";
+    s4.padding = 12;
+    s4.onShow = [this]() {
+        m_tabWidget->setCurrentIndex(1); // Switch to All Tables tab
+        if (m_allTablesWidget->getMainViewTabs()) {
+            m_allTablesWidget->getMainViewTabs()->setCurrentIndex(1); // Switch to 3D tab within All Tables
+        }
+    };
+    m_tourOverlay->addStep(s4);
+
+    // Step 5: Burn/Save Button
+    TourStep s5;
+    s5.anchorWidget = m_saveButton;
+    s5.title = "Commit Tune changes";
+    s5.body = "Edits live in memory until you Save/Burn. Save writes them to the ECU permanently. Always Burn before unplugging.";
+    s5.padding = 8;
+    s5.onShow = [this]() {
+        // Nothing special to switch
+    };
+    m_tourOverlay->addStep(s5);
+
+    // Step 6: Help Menu
+    TourStep s6;
+    s6.anchorWidget = m_helpButton;
+    s6.title = "Demo & Exploration Mode";
+    s6.body = "No ECU yet? Click '?' or Help -> Demo Mode to explore with simulated data — nothing you do here can hurt anything.";
+    s6.padding = 8;
+    s6.onShow = [this]() {
+        // Highlight Help Button
+    };
+    m_tourOverlay->addStep(s6);
+
+    // Start the tour!
+    m_tourOverlay->startTour();
 }

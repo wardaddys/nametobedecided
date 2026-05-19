@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(TunerStudio_OS VERSION 2.0.0 LANGUAGES CXX)
+project(OSTuner VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,9 +40,11 @@ set(SOURCES
     src/core/ProjectManager.cpp
     src/core/MsqParser.cpp
     src/core/UpdateChecker.cpp
+    src/core/WorkspaceRegistry.cpp
     src/widgets/CircularGauge.cpp
     src/widgets/StatusBox.cpp
     src/widgets/DashboardWidget.cpp
+    src/widgets/ThrottleBodyWidget.cpp
     src/widgets/AllTablesWidget.cpp
     src/widgets/TableEditor.cpp
     src/widgets/IdleControlWidget.cpp
@@ -75,7 +77,25 @@ set(SOURCES
     src/widgets/DataGraph.cpp
     src/widgets/TuningWidgetBase.cpp
     src/widgets/ToothLoggerWidget.cpp
+    src/widgets/ProjectWizardOverlay.cpp
+    src/widgets/ReqFuelCalculatorDialog.cpp
+    src/widgets/onboarding/ProductTourOverlay.cpp
     src/core/ReferenceDatabase.cpp
+    # Group D — Workspaces (real implementations, opt-in via Settings flag).
+    src/widgets/workspaces/WorkspaceContainer.cpp
+    src/widgets/workspaces/FuelingWorkspace.cpp
+    src/widgets/workspaces/IgnitionWorkspace.cpp
+    # Group E — firmware-parity widgets.
+    src/widgets/DecoderConfigWidget.cpp
+    src/widgets/EngineCommandsWidget.cpp
+    src/widgets/CurveEditorWidget.cpp
+    src/widgets/IdleAlgorithmWidget.cpp
+    src/widgets/VVT2ControlWidget.cpp
+    src/widgets/EngineProtectionWidget.cpp
+    src/widgets/SDLoggerWidget.cpp
+    src/widgets/AdvancedFuelingWidget.cpp
+    src/widgets/CommsConfigWidget.cpp
+    src/widgets/CompositeLoggerWidget.cpp
 )
 
 # Header files
@@ -91,9 +111,11 @@ set(HEADERS
     src/core/ProjectManager.h
     src/core/MsqParser.h
     src/core/UpdateChecker.h
+    src/core/WorkspaceRegistry.h
     src/widgets/CircularGauge.h
     src/widgets/StatusBox.h
     src/widgets/DashboardWidget.h
+    src/widgets/ThrottleBodyWidget.h
     src/widgets/AllTablesWidget.h
     src/widgets/TableEditor.h
     src/widgets/IdleControlWidget.h
@@ -127,7 +149,27 @@ set(HEADERS
     src/widgets/DataGraph.h
     src/widgets/TuningWidgetBase.h
     src/widgets/ToothLoggerWidget.h
+    src/widgets/ProjectWizardOverlay.h
+    src/widgets/ReqFuelCalculatorDialog.h
+    src/widgets/onboarding/ProductTourOverlay.h
+    src/widgets/onboarding/TourStep.h
     src/core/ReferenceDatabase.h
+    # Group D — Workspaces.
+    src/widgets/workspaces/WorkspaceBase.h
+    src/widgets/workspaces/WorkspaceContainer.h
+    src/widgets/workspaces/FuelingWorkspace.h
+    src/widgets/workspaces/IgnitionWorkspace.h
+    # Group E — firmware-parity widgets.
+    src/widgets/DecoderConfigWidget.h
+    src/widgets/EngineCommandsWidget.h
+    src/widgets/CurveEditorWidget.h
+    src/widgets/IdleAlgorithmWidget.h
+    src/widgets/VVT2ControlWidget.h
+    src/widgets/EngineProtectionWidget.h
+    src/widgets/SDLoggerWidget.h
+    src/widgets/AdvancedFuelingWidget.h
+    src/widgets/CommsConfigWidget.h
+    src/widgets/CompositeLoggerWidget.h
 )
 
 # UI files
@@ -187,24 +229,24 @@ install(TARGETS ${PROJECT_NAME}
 # We'll rely on CPack to bundle the install tree.
 
 # CPack Configuration
-set(CPACK_PACKAGE_NAME "TunerStudio_OS-V2")
-set(CPACK_PACKAGE_VENDOR "TunerStudio Team")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Professional ECU Tuning Application for Speeduino")
+set(CPACK_PACKAGE_NAME "OSTuner")
+set(CPACK_PACKAGE_VENDOR "OS Tuner Team")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Open-Source ECU Tuning Application for Speeduino")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "TunerStudio_OS-V2")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "OSTuner")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 
 # NSIS Specifics
 set(CPACK_GENERATOR "NSIS")
-set(CPACK_NSIS_DISPLAY_NAME "TunerStudio OS V2")
-set(CPACK_NSIS_PACKAGE_NAME "TunerStudio OS V2")
-set(CPACK_NSIS_HELP_LINK "https://github.com/tunerstudio")
-set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/tunerstudio")
-set(CPACK_NSIS_CHASSIS_DESCRIPTION "A professional ECU tuning application for Speeduino.")
+set(CPACK_NSIS_DISPLAY_NAME "OS Tuner")
+set(CPACK_NSIS_PACKAGE_NAME "OS Tuner")
+set(CPACK_NSIS_HELP_LINK "https://github.com/AeroSaeed/OS-Tuner")
+set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/AeroSaeed/OS-Tuner")
+set(CPACK_NSIS_CHASSIS_DESCRIPTION "An open-source ECU tuning application for Speeduino.")
 
 # Desktop shortcut and Start Menu
-set(CPACK_NSIS_CREATE_ICONS_EXTRA "CreateShortCut '$DESKTOP\\TunerStudio OS V2.lnk' '$INSTDIR\\TunerStudio_OS.exe'")
-set(CPACK_NSIS_DELETE_ICONS_EXTRA "Delete '$DESKTOP\\TunerStudio OS V2.lnk'")
+set(CPACK_NSIS_CREATE_ICONS_EXTRA "CreateShortCut '$DESKTOP\\OS Tuner.lnk' '$INSTDIR\\OSTuner.exe'")
+set(CPACK_NSIS_DELETE_ICONS_EXTRA "Delete '$DESKTOP\\OS Tuner.lnk'")
 
 include(CPack)
 
@@ -213,17 +255,20 @@ include(CTest)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
 
-    add_executable(TunerProCoreTests
-        tests/ECUSettingsManagerGuardrailsTest.cpp
+    # Core sources shared across every test executable (G1-G4 each get their
+    # own binary so a crash in one suite doesn't block the others).
+    set(OSTUNER_TEST_CORE_SOURCES
         src/core/ECUSettingsManager.cpp
         src/core/ECUDefinition.cpp
         src/core/ECUData.cpp
         src/core/SerialManager.cpp
         src/core/SpeeduinoProtocol.cpp
+        src/core/WorkspaceRegistry.cpp
+        src/core/MsqParser.cpp
         src/utils/Logger.cpp
     )
 
-    target_include_directories(TunerProCoreTests PRIVATE
+    set(OSTUNER_TEST_INCLUDE_DIRS
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/src/core
         ${CMAKE_SOURCE_DIR}/src/widgets
@@ -231,7 +276,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/src/utils
     )
 
-    target_link_libraries(TunerProCoreTests
+    set(OSTUNER_TEST_LIBS
         Qt6::Core
         Qt6::Test
         Qt6::SerialPort
@@ -239,5 +284,28 @@ if(BUILD_TESTING)
         Qt6::Network
     )
 
-    add_test(NAME ECUSettingsManagerGuardrails COMMAND TunerProCoreTests)
+    function(add_ostuner_test target_name source_file)
+        add_executable(${target_name} ${source_file} ${OSTUNER_TEST_CORE_SOURCES})
+        target_include_directories(${target_name} PRIVATE ${OSTUNER_TEST_INCLUDE_DIRS})
+        target_link_libraries(${target_name} ${OSTUNER_TEST_LIBS})
+        # SOURCE_DIR_FOR_TESTS lets the INI smoke test locate the bundled
+        # MS1 Extra fixture relative to the source tree.
+        target_compile_definitions(${target_name} PRIVATE
+            "SOURCE_DIR_FOR_TESTS=\"${CMAKE_SOURCE_DIR}\""
+        )
+        add_test(NAME ${target_name} COMMAND ${target_name})
+    endfunction()
+
+    # Phase 0 guardrails (existing test suite).
+    add_ostuner_test(OSTunerCoreTests       tests/ECUSettingsManagerGuardrailsTest.cpp)
+    # G1: protocol round-trip — CRC32, frame wrap/unwrap, command builders.
+    add_ostuner_test(SpeeduinoProtocolTest  tests/SpeeduinoProtocolTest.cpp)
+    # G2: INI parser coverage on real and synthetic fixtures.
+    add_ostuner_test(ECUDefinitionTest      tests/ECUDefinitionTest.cpp)
+    # G3: SerialManager simulation + signature-gate contract.
+    add_ostuner_test(SerialHandshakeTest    tests/SerialHandshakeTest.cpp)
+    # G4: burnAllDirty regression lock (BUG-A).
+    add_ostuner_test(BurnChainTest          tests/BurnChainTest.cpp)
+    # F4: MSQ round-trip + metadata regression coverage.
+    add_ostuner_test(MsqRoundTripTest       tests/MsqRoundTripTest.cpp)
 endif()

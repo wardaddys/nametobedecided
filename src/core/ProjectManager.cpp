@@ -32,7 +32,16 @@ bool ProjectManager::loadProject(const QString &projectDir) {
     
     // 2. Find INI file
     if (!findIniFile()) {
-        emit projectLoadFailed("Could not find mainController.ini or valid custom.ini in project.");
+        emit projectLoadFailed(
+            QString("No INI file found in %1.\n\n"
+                    "Looked in:\n"
+                    "  • %1/projectCfg/mainController.ini\n"
+                    "  • %1/projectCfg/*.ini\n"
+                    "  • %1/mainController.ini\n"
+                    "  • %1/*.ini\n\n"
+                    "Pick a TunerStudio project folder (the one that contains "
+                    "either a projectCfg/ subfolder or an .ini file directly).")
+                .arg(projectDir));
         return false;
     }
     
@@ -83,19 +92,42 @@ bool ProjectManager::parseProjectProperties(const QString &propPath) {
 }
 
 bool ProjectManager::findIniFile() {
-    QDir cfgDir(m_projectDir + "/projectCfg");
-    
-    // Check mainController.ini
-    if (cfgDir.exists("mainController.ini")) {
-        m_iniPath = cfgDir.filePath("mainController.ini");
-        return true;
-    }
-    
-    // Fallback: Check if there's any other .ini
-    QStringList inis = cfgDir.entryList(QStringList() << "*.ini", QDir::Files);
-    if (!inis.isEmpty()) {
-        m_iniPath = cfgDir.filePath(inis.first());
-        return true;
+    // Look in every place a real TunerStudio project might put the INI:
+    //   1. <project>/projectCfg/mainController.ini  (TS-managed projects)
+    //   2. <project>/projectCfg/*.ini               (any other INI in projectCfg)
+    //   3. <project>/mainController.ini             (flat layout)
+    //   4. <project>/*.ini                          (loose INI in project root)
+    //   5. <project>'s parent — if the user selected projectCfg/ by mistake
+    //      we resolve up one level and try again.
+    auto tryDir = [this](const QString& path) -> bool {
+        QDir dir(path);
+        if (!dir.exists()) return false;
+        if (dir.exists("mainController.ini")) {
+            m_iniPath = dir.filePath("mainController.ini");
+            return true;
+        }
+        QStringList inis = dir.entryList(QStringList() << "*.ini", QDir::Files);
+        if (!inis.isEmpty()) {
+            m_iniPath = dir.filePath(inis.first());
+            return true;
+        }
+        return false;
+    };
+
+    if (tryDir(m_projectDir + "/projectCfg")) return true;
+    if (tryDir(m_projectDir)) return true;
+
+    // The user may have selected projectCfg/ instead of the project root.
+    QDir asProject(m_projectDir);
+    if (asProject.dirName() == "projectCfg") {
+        QDir parent = asProject;
+        parent.cdUp();
+        if (tryDir(parent.absolutePath())) {
+            // Adjust the project root so the MSQ lookup also works.
+            m_projectDir = parent.absolutePath();
+            m_projectName = parent.dirName();
+            return true;
+        }
     }
     return false;
 }

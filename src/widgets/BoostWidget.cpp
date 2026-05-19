@@ -315,17 +315,10 @@ QWidget *BoostWidget::createTableSection() {
   // TPS values
   QStringList tpsValues = {"20", "30", "40", "50", "60", "70", "80", "100"};
 
-  // Initialize with zeros until real ECU data is loaded
-  double sampleData[8][10] = {
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
-
+  // E5: pull live values from ECUSettingsManager when available.
+  // The audit flagged this table as a "placeholder filled with zeros".
+  // We now read the boostTable target map at construct time and write
+  // changes back through setValue("boostTable", ...) on cell edits.
   for (int row = 0; row < 8; row++) {
     for (int col = 0; col < 11; col++) {
       QTableWidgetItem *item;
@@ -334,14 +327,40 @@ QWidget *BoostWidget::createTableSection() {
         item->setBackground(QColor("#1E1E1E"));
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
       } else {
-        item = new QTableWidgetItem(
-            QString::number(sampleData[row][col - 1], 'f', 1));
+        double cellValue = 0.0;
+        if (m_settingsManager) {
+          QVariant v = m_settingsManager->getTableValue("boostTable", row, col - 1);
+          if (v.isValid()) cellValue = v.toDouble();
+        }
+        item = new QTableWidgetItem(QString::number(cellValue, 'f', 1));
       }
       item->setTextAlignment(Qt::AlignCenter);
       item->setForeground(QColor("#00BCD4"));
       m_boostTable->setItem(row, col, item);
     }
   }
+
+  // Live write-back: when a cell changes, push it through the settings
+  // manager so the firmware gets the update.
+  connect(m_boostTable, &QTableWidget::cellChanged,
+          this, [this](int row, int col) {
+            if (!m_settingsManager || col == 0) return;
+            QTableWidgetItem* item = m_boostTable->item(row, col);
+            if (!item) return;
+            // Refresh the entire boostTable from the cells and write it.
+            // ECUSettingsManager::writeTable expects the full matrix, which
+            // mirrors how AllTablesWidget handles edits.
+            const int rows = m_boostTable->rowCount();
+            const int cols = m_boostTable->columnCount() - 1; // skip TPS col
+            QVector<QVector<double>> data(rows, QVector<double>(cols, 0.0));
+            for (int r = 0; r < rows; ++r) {
+              for (int c = 0; c < cols; ++c) {
+                auto* cell = m_boostTable->item(r, c + 1);
+                if (cell) data[r][c] = cell->text().toDouble();
+              }
+            }
+            m_settingsManager->writeTable("boostTable", data);
+          });
 
   m_boostTable->setStyleSheet(R"(
         QTableWidget {

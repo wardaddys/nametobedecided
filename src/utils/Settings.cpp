@@ -72,3 +72,25 @@ void Settings::setLastEcuDefPath(const QString &path) {
   if (m_settings)
     m_settings->setValue("ECU/LastDefPath", path);
 }
+
+bool Settings::getWorkspacesPreviewEnabled() {
+  if (m_settings)
+    return m_settings->value("Workspaces/PreviewEnabled", false).toBool();
+  return false;
+}
+
+void Settings::setWorkspacesPreviewEnabled(bool enabled) {
+  if (m_settings)
+    m_settings->setValue("Workspaces/PreviewEnabled", enabled);
+}
+
+bool Settings::getFirstRunCompleted() {
+  if (m_settings)
+    return m_settings->value("Onboarding/FirstRunCompleted", false).toBool();
+  return false;
+}
+
+void Settings::setFirstRunCompleted(bool completed) {
+  if (m_settings)
+    m_settings->setValue("Onboarding/FirstRunCompleted", completed);
+}

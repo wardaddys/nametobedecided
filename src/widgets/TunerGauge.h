@@ -18,8 +18,12 @@ public:
     double visualValue() const { return m_visualValue; }
     void setVisualValue(double v);
 
+signals:
+    void clicked();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
 
 private:
     double m_min;

@@ -120,7 +120,7 @@ void LoggingWidget::setupUi() {
     m_bufferBar = new BufferBar(this);
     cL->addWidget(m_bufferBar);
     
-    m_fileLabel = new QLabel("Path: Documents/TunerPro/Logs", this);
+    m_fileLabel = new QLabel("Path: Documents/OSTuner/Logs", this);
     m_fileLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(TunerProColors::TEXT_MUTED));
     cL->addWidget(m_fileLabel);
 

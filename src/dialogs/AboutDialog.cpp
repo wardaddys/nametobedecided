@@ -9,19 +9,20 @@
  */
 
 #include "AboutDialog.h"
+#include "core/version.h"
 
 AboutDialog::AboutDialog(QWidget *parent) : QDialog(parent) {
-    setWindowTitle("About TunerStudio OS");
+    setWindowTitle("About OS Tuner");
     setFixedSize(400, 300);
     
     QVBoxLayout *layout = new QVBoxLayout(this);
     
-    QLabel *titleLabel = new QLabel("TunerStudio OS", this);
+    QLabel *titleLabel = new QLabel("OS Tuner", this);
     titleLabel->setStyleSheet("font-size: 24px; font-weight: bold; color: #00BCD4;");
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
     
-    QLabel *versionLabel = new QLabel("Version 2.0.0-alpha", this);
+    QLabel *versionLabel = new QLabel(QString("Version %1").arg(OSTUNER_VERSION_STRING), this);
     versionLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(versionLabel);
     

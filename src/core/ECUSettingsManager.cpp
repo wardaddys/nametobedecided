@@ -87,11 +87,18 @@ int ECUSettingsManager::constantByteSize(const ECUDefinition::Constant &def) con
         return 1;
     }
 
-    if (def.type == "U08" || def.type == "S08") return 1;
-    if (def.type == "U16" || def.type == "S16") return 2;
-    if (def.type == "U32" || def.type == "S32" || def.type == "F32") return 4;
+    int typeSize = 0;
+    if (def.type == "U08" || def.type == "S08") typeSize = 1;
+    else if (def.type == "U16" || def.type == "S16") typeSize = 2;
+    else if (def.type == "U32" || def.type == "S32" || def.type == "F32") typeSize = 4;
 
-    return 0;
+    if (typeSize == 0) return 0;
+
+    if (def.paramClass == "array") {
+        return typeSize * def.cols * def.rows;
+    }
+
+    return typeSize;
 }
 
 bool ECUSettingsManager::validateConstantBounds(const ECUDefinition::Constant &def, QString *error) const {
@@ -212,10 +219,12 @@ bool ECUSettingsManager::validateTableBounds(const ECUDefinition::Table &def, QS
 bool ECUSettingsManager::validateConstantCollisions(
     const QMap<QString, ECUDefinition::Constant> &definitions,
     QString *error) const {
+    
     struct ConstantRange {
         int start;
         int end;
         QString name;
+        QString paramClass;
     };
 
     QMap<int, QList<ConstantRange>> rangesByPage;
@@ -229,24 +238,34 @@ bool ECUSettingsManager::validateConstantCollisions(
         }
 
         const int size = constantByteSize(def);
-        ConstantRange candidate{def.offset, def.offset + size - 1, def.name};
+        ConstantRange candidate{def.offset, def.offset + size - 1, def.name, def.paramClass};
 
         QList<ConstantRange> &pageRanges = rangesByPage[def.page];
         for (const ConstantRange &existing : pageRanges) {
             const bool overlaps = candidate.start <= existing.end && existing.start <= candidate.end;
             if (overlaps) {
-                if (error) {
-                    *error = QString(
-                                 "Constant offset collision on page %1: '%2' [%3..%4] overlaps '%5' [%6..%7]")
+                // [INTENTIONAL OVERLAP / ALIASING]
+                // 1. Exact same range: This is an alias (two names for the same memory).
+                // 2. Bit-fields: Allowed to overlap with each other or their parent scalar.
+                bool isAlias = (candidate.start == existing.start && candidate.end == existing.end);
+                bool isBitOverlap = (candidate.paramClass == "bits" || existing.paramClass == "bits");
+
+                if (isAlias || isBitOverlap) {
+                    continue;
+                }
+                
+                // [CRIT-10] Downgrade to warning: Many INIs have intentional or 
+                // legacy overlaps that TunerStudio permits. Do not block project load.
+                Logger::warning(QString(
+                                 "Memory overlap detected on page %1: '%2' [%3..%4] and '%5' [%6..%7]. "
+                                 "This is common in some INIs and will be allowed.")
                                  .arg(def.page)
                                  .arg(candidate.name)
                                  .arg(candidate.start)
                                  .arg(candidate.end)
                                  .arg(existing.name)
                                  .arg(existing.start)
-                                 .arg(existing.end);
-                }
-                return false;
+                                 .arg(existing.end));
             }
         }
 
@@ -285,7 +304,10 @@ void ECUSettingsManager::onSerialConnected() {
     }
 
     Logger::info("ECUSettingsManager: Serial connected, reading settings from loaded definition...");
-    readAllFromECU();
+    // [FIX-QUEUE] Do NOT auto-read all pages on connect.
+    // Page reads flood the command queue and prevent RT data polling.
+    // The user can manually trigger page reads via the toolbar.
+    // readAllFromECU();
 }
 
 void ECUSettingsManager::onSerialDisconnected() {
@@ -707,14 +729,69 @@ void ECUSettingsManager::onBurnVerifyTimeout() {
     m_isVerifyingBurn = false;
     Logger::error("Burn verification timed out for page " + QString::number(m_pendingBurnPage));
     emit burnVerificationFailed(m_pendingBurnPage, "ECU timed out responding to burn");
+
+    // BUG-A fix: if chained burn is in progress, surface failure and stop the chain
+    if (m_burnAllInProgress) {
+        m_burnAllInProgress = false;
+        m_burnQueue.clear();
+        emit burnAllFailed(m_pendingBurnPage, "Burn verification timed out");
+    }
 }
 
 void ECUSettingsManager::burnAllDirty() {
+    if (m_burnAllInProgress) {
+        Logger::warning("burnAllDirty() called while chain burn already in progress — ignoring");
+        return;
+    }
+
+    // Collect all dirty pages into the burn queue
+    m_burnQueue.clear();
     for (int i = 0; i < MAX_PAGES; i++) {
         if (m_pageDirty[i]) {
-            burnPage(static_cast<quint8>(i));
+            m_burnQueue.append(static_cast<quint8>(i));
         }
     }
+
+    if (m_burnQueue.isEmpty()) {
+        Logger::info("burnAllDirty: no dirty pages to burn");
+        emit burnAllComplete();
+        return;
+    }
+
+    Logger::info(QString("burnAllDirty: %1 dirty pages queued: %2")
+                 .arg(m_burnQueue.size())
+                 .arg([this]() {
+                     QStringList pages;
+                     for (quint8 p : m_burnQueue) pages << QString::number(p);
+                     return pages.join(", ");
+                 }()));
+
+    m_burnAllInProgress = true;
+    advanceBurnQueue();
+}
+
+void ECUSettingsManager::advanceBurnQueue() {
+    if (m_burnQueue.isEmpty()) {
+        // All pages burned successfully
+        m_burnAllInProgress = false;
+        Logger::info("burnAllDirty: all pages burned successfully");
+        emit burnAllComplete();
+        return;
+    }
+
+    quint8 nextPage = m_burnQueue.first();
+    int remaining = m_burnQueue.size();
+    int total = remaining; // Approximate — we don't track the original count here
+
+    // For accurate progress, we compute from what's left vs what was originally queued.
+    // Since burnPage() clears m_pageDirty, we can't recount. But we emit current position.
+    emit burnAllProgress(1, remaining);
+
+    Logger::info(QString("burnAllDirty: burning page %1 (%2 remaining)")
+                 .arg(nextPage).arg(remaining));
+
+    // burnPage() will set m_isVerifyingBurn = true and clear m_pageDirty[nextPage]
+    burnPage(nextPage);
 }
 
 QList<quint8> ECUSettingsManager::getDirtyPages() const {
@@ -734,11 +811,24 @@ void ECUSettingsManager::onPageCRCReceived(quint8 page, uint32_t crc) {
         Logger::info("Burn verification successful for page " + QString::number(page));
         m_pendingBurnPage = 0;
         emit burnComplete(page);
+
+        // BUG-A fix: advance to next page in the chained burn queue
+        if (m_burnAllInProgress) {
+            m_burnQueue.removeFirst();
+            advanceBurnQueue();
+        }
     } else {
         Logger::error(QString("Burn verification failed for page %1! (Expected 0x%2, Got 0x%3)")
                       .arg(page).arg(m_expectedPageCRC, 8, 16, QChar('0'))
                       .arg(crc, 8, 16, QChar('0')));
         emit burnVerificationFailed(page, "CRC mismatch after burn");
+
+        // BUG-A fix: stop the chain on CRC failure
+        if (m_burnAllInProgress) {
+            m_burnAllInProgress = false;
+            m_burnQueue.clear();
+            emit burnAllFailed(page, "CRC mismatch after burn");
+        }
     }
 }
 
@@ -932,13 +1022,35 @@ QStringList ECUSettingsManager::getTableNames() const {
 }
 
 bool ECUSettingsManager::loadDefinition(const QString &iniPath) {
-    if (m_ecuDef.load(iniPath)) {
+    if (!m_ecuDef.load(iniPath)) {
+        const QString msg = QString("INI file could not be read or opened: %1").arg(iniPath);
+        Logger::error("ECUSettingsManager: " + msg);
+        emit errorOccurred(msg);
+        return false;
+    }
+    {
         m_definitions = m_ecuDef.getConstants();
         m_tableDefinitions = m_ecuDef.getTables();
         m_definitionLoaded = !m_definitions.isEmpty();
 
         if (!m_definitionLoaded) {
-            Logger::error("ECUSettingsManager: INI parsed but no constants were loaded");
+            // Diagnostic context: what *did* the parser find?
+            const int outputs = m_ecuDef.getOutputChannels().size();
+            const int tables  = m_tableDefinitions.size();
+            const QString sig = m_ecuDef.getSignature();
+            const QString msg =
+                QString("INI parsed but no Constants were extracted.\n"
+                        "  signature       : %1\n"
+                        "  output channels : %2\n"
+                        "  tables          : %3\n\n"
+                        "Likely cause: the INI uses #if / #set directives "
+                        "guarded by options that aren't set in the loaded "
+                        "[SettingGroups] context, or the [Constants] section "
+                        "wasn't reached. Open %4 to inspect.")
+                    .arg(sig.isEmpty() ? QStringLiteral("(none)") : sig)
+                    .arg(outputs).arg(tables).arg(iniPath);
+            Logger::error("ECUSettingsManager: " + msg);
+            emit errorOccurred(msg);
             return false;
         }
 
@@ -968,11 +1080,10 @@ bool ECUSettingsManager::loadDefinition(const QString &iniPath) {
         }
 
         if (m_serialManager) {
-            // Keep SerialManager and ECUSettingsManager on the same authoritative definition
-            if (!m_serialManager->loadEcuDefinition(iniPath)) {
-                Logger::error("ECUSettingsManager: Failed to load definition into SerialManager");
-                return false;
-            }
+            // [PERF] Share the already-parsed definition with SerialManager
+            // instead of re-parsing from disk. This eliminates the triple-load
+            // bug where the INI was parsed 3 times on every project open.
+            m_serialManager->setEcuDefinition(m_ecuDef);
         }
 
         Logger::info(QString("ECUSettingsManager: Loaded %1 settings and %2 tables from INI")
@@ -981,7 +1092,6 @@ bool ECUSettingsManager::loadDefinition(const QString &iniPath) {
         emit definitionsLoaded();
         return true;
     }
-    return false;
 }
 
 void ECUSettingsManager::injectMsqData(const QMap<QString, QString> &constants) {
@@ -1048,4 +1158,33 @@ void ECUSettingsManager::injectMsqData(const QMap<QString, QString> &constants) 
     }
     Logger::info(QString("ECUSettingsManager: Injected %1 scalars and %2 tables from MSQ (MS1 mapping: %3)")
         .arg(injectedScalars).arg(injectedTables).arg(isMs1 ? "active" : "inactive"));
+}
+
+// ============================================================================
+// F2: Additive const accessors used by MsqParser::save() (F3) and any other
+// tool that needs to enumerate the full state without touching the existing
+// public API.  All const; none mutate state.
+// ============================================================================
+
+QStringList ECUSettingsManager::getAllConstantNames() const {
+    return m_definitions.keys();
+}
+
+QStringList ECUSettingsManager::getPcVariableNames() const {
+    QStringList out;
+    for (const QString& n : m_pcVariableNames) out.append(n);
+    return out;
+}
+
+QVector<QVector<double>>
+ECUSettingsManager::getTableData(const QString &tableName) const {
+    return m_tableData.value(tableName);
+}
+
+QMap<QString, bool> ECUSettingsManager::getActiveConditionalFlags() const {
+    return m_ecuDef.getConditions();
+}
+
+bool ECUSettingsManager::isPcVariable(const QString &settingName) const {
+    return m_pcVariableNames.contains(settingName);
 }

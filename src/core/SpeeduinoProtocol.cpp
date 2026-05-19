@@ -192,6 +192,13 @@ bool SpeeduinoProtocol::loadDefinition(const QString &filePath) {
     return false;
 }
 
+void SpeeduinoProtocol::setEcuDefinition(const ECUDefinition &def) {
+    // [PERF] Accept an already-parsed definition instead of re-parsing from file.
+    m_ecuDefinition = def;
+    qDebug() << "ECU Definition injected (no re-parse). Output Channels:"
+             << m_ecuDefinition.getOutputChannels().size();
+}
+
 // ============================================================================
 //  Command Creation
 // ============================================================================
@@ -298,6 +305,31 @@ QByteArray SpeeduinoProtocol::createToothLogRequest() {
     QByteArray cmd;
     cmd.append(SpeeduinoCommands::CMD_TOOTH_LOG); // 'T'
     return cmd;
+}
+
+// E10: Composite logger commands.
+//
+// The firmware comms.cpp implements the 'J'/'j' pair to start/stop the
+// composite logger and 'O' to read the captured buffer. 'X' resets the
+// composite buffer between captures. These commands were never wrapped on
+// the OS Tuner side; we add them here without altering any existing path.
+QByteArray SpeeduinoProtocol::createStartCompositeLog() {
+    QByteArray cmd; cmd.append(SpeeduinoCommands::CMD_START_COMP); return cmd;
+}
+QByteArray SpeeduinoProtocol::createStopCompositeLog() {
+    QByteArray cmd; cmd.append(SpeeduinoCommands::CMD_STOP_COMP); return cmd;
+}
+QByteArray SpeeduinoProtocol::createReadCompositeLog() {
+    QByteArray cmd; cmd.append('O'); return cmd;
+}
+QByteArray SpeeduinoProtocol::createResetCompositeBuffer() {
+    QByteArray cmd; cmd.append('X'); return cmd;
+}
+QByteArray SpeeduinoProtocol::createStartToothLogger() {
+    QByteArray cmd; cmd.append(SpeeduinoCommands::CMD_START_TOOTH); return cmd; // 'H'
+}
+QByteArray SpeeduinoProtocol::createStopToothLogger() {
+    QByteArray cmd; cmd.append(SpeeduinoCommands::CMD_STOP_TOOTH); return cmd;  // 'h'
 }
 
 // ============================================================================
@@ -427,20 +459,36 @@ RealTimeData SpeeduinoProtocol::parseRealTimeData(const QByteArray &data) {
 // ============================================================================
 
 ECUSignature SpeeduinoProtocol::parseSignature(const QByteArray &data) {
-    QString sigStr = QString::fromLatin1(data);
+    // Strip null bytes and control chars — ECU may send trailing \0 or \r\n
+    QByteArray clean;
+    for (int i = 0; i < data.size(); ++i) {
+        char c = data.at(i);
+        if (c >= 0x20 && c < 0x7F) clean.append(c); // printable ASCII only
+    }
+    QString sigStr = QString::fromLatin1(clean).trimmed();
 
     ECUSignature sig;
-    sig.firmwareVersion = "Unknown";
+    sig.firmwareVersion = "";
     sig.boardType = "Unknown";
     sig.protocolVersion = 0;
     sig.pageCount = 15; // Speeduino always has 15 pages
 
-    if (sigStr.startsWith("Speeduino")) {
-        sig.firmwareVersion = sigStr.mid(10).trimmed();
+    if (sigStr.contains("Speeduino", Qt::CaseInsensitive)) {
+        // Extract version: everything after "Speeduino" + optional space
+        int idx = sigStr.indexOf("Speeduino", 0, Qt::CaseInsensitive);
+        QString after = sigStr.mid(idx + 9).trimmed();
+        
+        if (after.isEmpty()) {
+            // ECU sent just "Speeduino" without version — still valid
+            sig.firmwareVersion = "Speeduino (version unknown)";
+        } else {
+            sig.firmwareVersion = after;
+        }
         sig.boardType = "Generic";
         sig.protocolVersion = 2; // New protocol
-    } else {
-        sig.firmwareVersion = sigStr.trimmed();
+    } else if (!sigStr.isEmpty()) {
+        // Non-Speeduino signature — still store it
+        sig.firmwareVersion = sigStr;
     }
 
     return sig;
@@ -532,6 +580,7 @@ SpeeduinoProtocol::DynamicRTData SpeeduinoProtocol::parseRealTimeDataDynamic(
 
         // Store in dynamic map
         result.channels.insert(ch.name, userValue);
+        result.legacy.dynamicChannels.insert(ch.name, userValue);
 
         // ---- Legacy struct mapping ----
         // Map well-known INI channel names to RealTimeData fields.

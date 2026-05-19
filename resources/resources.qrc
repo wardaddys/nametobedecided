@@ -16,5 +16,6 @@
         <file>Statup screen images/TunerStudio OS backgroung image.png</file>
         <file>Statup screen images/TunerStudio OS logo.png</file>
         <file>Statup screen images/TunerStudio OS welcome message .png</file>
+        <file>workspaces/mapping.yaml</file>
     </qresource>
 </RCC>

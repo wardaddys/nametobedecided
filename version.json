@@ -1,5 +1,4 @@
 {
-  "latest_version": "1.0.0-alpha",
-  "download_url": "https://github.com/tunerpro/tunerpro-v2/releases/latest/download/TunerPro_Update.exe",
-  "release_notes_url": "https://github.com/tunerpro/tunerpro-v2/releases"
+  "latest_version": "0.5.0-alpha",
+  "releases_url": "https://github.com/AeroSaeed/OS-Tuner/releases"
 }

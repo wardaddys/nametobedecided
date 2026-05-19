@@ -113,7 +113,15 @@ ToothLoggerWidget::ToothLoggerWidget(QWidget *parent)
 }
 
 void ToothLoggerWidget::setSerialManager(SerialManager *serial) {
+  if (m_serialManager) {
+    disconnect(m_serialManager, &SerialManager::toothDataReceived,
+               this, &ToothLoggerWidget::onToothDataReceived);
+  }
   m_serialManager = serial;
+  if (m_serialManager) {
+    connect(m_serialManager, &SerialManager::toothDataReceived,
+            this, &ToothLoggerWidget::onToothDataReceived);
+  }
 }
 
 void ToothLoggerWidget::setupUi() {
@@ -237,6 +245,17 @@ void ToothLoggerWidget::onCaptureClicked() {
     m_statusLabel->setText("Status: Capturing...");
     m_statusLabel->setStyleSheet(QString("color: %1; font-family: 'JetBrains Mono'; font-size: 12px;").arg(TunerProColors::SAFE));
     Logger::info("ToothLogger: Capture started");
+
+    // Send 'T' command to ECU to request tooth log data
+    if (m_serialManager && m_serialManager->isConnected()) {
+      SerialCommand cmd;
+      cmd.data = m_serialManager->m_protocol->createToothLogRequest();
+      cmd.type = CommandType::ToothLog;
+      cmd.expectedResponse = -1;
+      cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
+      cmd.retryCount = 1;
+      m_serialManager->queueCommand(cmd);
+    }
   } else {
     m_captureBtn->setText("START CAPTURE");
     m_captureBtn->setStyleSheet(QString(

@@ -105,6 +105,7 @@ public:
   explicit SpeeduinoProtocol(QObject *parent = nullptr);
 
   bool loadDefinition(const QString &filePath);
+  void setEcuDefinition(const ECUDefinition &def);
 
   // === Command Creation Methods ===
   QByteArray createRealTimeDataRequest();    ///< 'A'
@@ -119,6 +120,13 @@ public:
   QByteArray createPageCRCRequest(uint8_t page);                  ///< 'd'
   QByteArray createButtonCommand(uint16_t commandId);             ///< 'E'
   QByteArray createToothLogRequest();                             ///< 'T'
+  // E10: composite + tooth logger lifecycle commands.
+  QByteArray createStartCompositeLog();                           ///< 'J'
+  QByteArray createStopCompositeLog();                            ///< 'j'
+  QByteArray createReadCompositeLog();                            ///< 'O'
+  QByteArray createResetCompositeBuffer();                        ///< 'X'
+  QByteArray createStartToothLogger();                            ///< 'H'
+  QByteArray createStopToothLogger();                             ///< 'h'
 
   // === Response Parsing ===
   RealTimeData parseRealTimeData(const QByteArray &data);  ///< Legacy 130-byte hardcoded parser

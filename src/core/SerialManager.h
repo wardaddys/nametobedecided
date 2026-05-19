@@ -34,7 +34,7 @@ struct SerialCommand {
 
     SerialCommand() : type(CommandType::Unknown), expectedResponse(-1),
                       timeoutMs(1000), retryCount(3), pageNum(0), pageOffset(0),
-                      isRaw(false) {}
+                      isRaw(true) {}  // Default RAW: handshake uses raw 'S', so ECU is in legacy mode
 };
 
 /**
@@ -50,6 +50,7 @@ public:
     // === Connection Management ===
     QList<QSerialPortInfo> detectDevices();
     bool loadEcuDefinition(const QString &filePath);
+    void setEcuDefinition(const ECUDefinition &def);
     bool connectToDevice(const QString &portName, qint32 baudRate = 115200);
     void disconnectFromDevice();
     bool isConnected() const;
@@ -70,7 +71,15 @@ public:
     void readTable(quint8 table, quint16 offset, quint16 size);
     void writeTable(quint8 table, quint16 offset, const QByteArray &data);
     void sendBurnCommand(quint8 page);
+    void sendCalibrationTable(quint8 tableIndex, const QByteArray &tableData);
     void queueCommand(const SerialCommand &command);
+
+    /**
+     * @brief Returns true if the connected ECU's signature has been validated
+     * against the loaded definition. Writes, burns, and calibration uploads
+     * are blocked when this is false (unless running in simulation mode).
+     */
+    bool isSignatureValidated() const { return m_signatureValidated; }
 
     SpeeduinoProtocol *m_protocol;
 
@@ -83,6 +92,7 @@ signals:
     void pollingRateChanged(double hz);
     void tableResponseReceived(quint8 table, quint16 offset, const QByteArray &data);
     void pageCRCReceived(quint8 page, uint32_t crc);
+    void toothDataReceived(const QByteArray &data);
     
     /**
      * @brief Emitted when ECU signature fails validation against loaded definition
@@ -140,6 +150,7 @@ private:
     // Protocol state
     uint8_t m_lastSecl;               ///< Last secl value (for restart detection)
     QDateTime m_lastCommandSent;      ///< Watchdog for TX activity
+    bool m_waitingForRT = false;      ///< True when direct 'A' command was sent (bypasses queue)
 
     // Statistics
     int m_packetsSent;

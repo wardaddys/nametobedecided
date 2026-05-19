@@ -98,7 +98,7 @@ void LoggingManager::processData(const RealTimeData &data) {
 QString LoggingManager::generateDefaultFilename() const {
   QString docs =
       QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-  QDir dir(docs + "/TunerPro/Logs");
+  QDir dir(docs + "/OSTuner/Logs");
   if (!dir.exists())
     dir.mkpath(".");
 

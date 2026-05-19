@@ -51,6 +51,11 @@ QSize TunerGauge::sizeHint() const {
     return QSize(260, 260);
 }
 
+void TunerGauge::mousePressEvent(QMouseEvent *event) {
+    emit clicked();
+    QWidget::mousePressEvent(event);
+}
+
 void TunerGauge::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -90,18 +95,25 @@ void TunerGauge::paintEvent(QPaintEvent *) {
     double valRatio = qBound(0.0, (m_visualValue - m_min) / (m_max - m_min), 1.0);
     double valSweep = sweep * valRatio;
 
-    // Conical gradient
-    QConicalGradient cg(0, 0, -startAngle + sweep); 
-    cg.setColorAt(0.0, QColor("#FF2200")); // red 
-    cg.setColorAt(0.5, QColor("#FFB800")); // amber at midpoint roughly
-    cg.setColorAt(1.0, QColor("#00E5C8")); // teal
+    // Conical gradient - aligns with arc (225 to -45)
+    QConicalGradient cg(0, 0, 315.0); 
+    cg.setColorAt(0.0, QColor("#FF2200")); // red at -45 (end)
+    cg.setColorAt(135.0/360.0, QColor("#FFB800")); // amber at 90 (middle)
+    cg.setColorAt(270.0/360.0, QColor("#00E5C8")); // teal at 225 (start)
+    cg.setColorAt(1.0, QColor("#FF2200")); // wrap around
     
     QPen valPen((m_visualValue >= m_dangerThreshold) ? QBrush(QColor("#FF2200")) : QBrush(cg), 8);
     valPen.setCapStyle(Qt::FlatCap);
     if (valSweep > 0) {
         painter.setPen(valPen);
-        painter.drawArc(QRectF(-r, -r, 2*r, 2*r), int(-startAngle * 16), int(-valSweep * 16));
+        painter.drawArc(QRectF(-r, -r, 2*r, 2*r), int(startAngle * 16), int(-valSweep * 16));
     }
+
+    // Proportional font sizes
+    int tickFontSize = qMax(8, int(r * 0.12));
+    int valFontSize  = qMax(16, int(r * 0.40));
+    int lblFontSize  = qMax(9, int(r * 0.15));
+    int peakFontSize = qMax(8, int(r * 0.12));
 
     // Ticks
     for (int i = 0; i <= 50; ++i) {
@@ -121,7 +133,7 @@ void TunerGauge::paintEvent(QPaintEvent *) {
         if (major) {
             double txtR = r + 15;
             double val = m_min + tRatio * (m_max - m_min);
-            painter.setFont(QFont("JetBrains Mono", 10));
+            painter.setFont(QFont("JetBrains Mono", tickFontSize));
             
             QPointF p(txtR * cos(aRad), -txtR * sin(aRad));
             QRectF txtRect(p.x()-20, p.y()-10, 40, 20);
@@ -137,40 +149,35 @@ void TunerGauge::paintEvent(QPaintEvent *) {
     painter.drawLine(QPointF((r-4)*cos(peakRad), -(r-4)*sin(peakRad)),
                      QPointF((r+4)*cos(peakRad), -(r+4)*sin(peakRad)));
 
-    // Readout
-    painter.setPen(QColor("#EEF2FF"));
-    painter.setFont(QFont("JetBrains Mono", 36, QFont::Bold));
-    painter.drawText(QRectF(-r, -r/2, 2*r, r), Qt::AlignCenter, QString::number(m_visualValue, 'f', 0));
-    
-    painter.setPen(QColor("#7A8FAD"));
-    QFont lf("DM Sans", 11);
-    lf.setLetterSpacing(QFont::PercentageSpacing, 110);
-    painter.setFont(lf);
-    painter.drawText(QRectF(-r, r/3, 2*r, 20), Qt::AlignCenter, m_label);
-    
-    painter.setPen(QColor(255, 34, 0, 144));
-    painter.setFont(QFont("JetBrains Mono", 9));
-    painter.drawText(QRectF(-r, r/3 + 20, 2*r, 20), Qt::AlignCenter, QString("PEAK: %1").arg(m_peak, 0, 'f', 0));
-
-    // Needle
+    // Floating Needle (Sexy modern style, does not cross text)
     painter.save();
     painter.rotate(-startAngle + sweep * valRatio + 90);
     
     QPainterPath np;
-    np.moveTo(-3, 0);
-    np.lineTo(3, 0);
-    np.lineTo(0, -(r * 0.75));
+    np.moveTo(-3, -(r * 0.65));
+    np.lineTo(3, -(r * 0.65));
+    np.lineTo(1, -(r * 0.85));
+    np.lineTo(-1, -(r * 0.85));
     np.closeSubpath();
     
     painter.translate(1, 1);
-    painter.fillPath(np, QColor(0,0,0,96));
+    painter.fillPath(np, QColor(0,0,0,96)); // Drop shadow
     painter.translate(-1, -1);
     painter.fillPath(np, QColor("#EEF2FF"));
-    
     painter.restore();
 
-    // Pivot
-    painter.setBrush(QColor("#1A2640"));
-    painter.setPen(QPen(QColor("#00E5C8"), 1.5));
-    painter.drawEllipse(QRectF(-5, -5, 10, 10));
+    // Readout (Drawn last to ensure it is crisp and clear in the center)
+    painter.setPen(QColor("#EEF2FF"));
+    painter.setFont(QFont("JetBrains Mono", valFontSize, QFont::Bold));
+    painter.drawText(QRectF(-r, -r * 0.4, 2*r, r * 0.8), Qt::AlignCenter, QString::number(m_visualValue, 'f', 0));
+    
+    painter.setPen(QColor("#7A8FAD"));
+    QFont lf("DM Sans", lblFontSize);
+    lf.setLetterSpacing(QFont::PercentageSpacing, 110);
+    painter.setFont(lf);
+    painter.drawText(QRectF(-r, r * 0.35, 2*r, lblFontSize * 2), Qt::AlignCenter, m_label);
+    
+    painter.setPen(QColor(255, 34, 0, 144));
+    painter.setFont(QFont("JetBrains Mono", peakFontSize));
+    painter.drawText(QRectF(-r, r * 0.35 + lblFontSize * 1.5, 2*r, peakFontSize * 2), Qt::AlignCenter, QString("PEAK: %1").arg(m_peak, 0, 'f', 0));
 }

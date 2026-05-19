@@ -155,8 +155,30 @@ struct RealTimeData {
     uint16_t triggerToothAngle;  ///< (not in 'A' cmd)
     uint8_t  spark;              ///< (legacy compat field)
 
+    // Dynamic data from INI output channels
+    QMap<QString, double> dynamicChannels;
+
     // Timestamp of when this data was received
     QDateTime timestamp;
+
+    /**
+     * @brief Dynamic value accessor — checks INI-mapped channels first, then fallback to getters
+     */
+    double getValue(const QString &name) const {
+        if (dynamicChannels.contains(name)) return dynamicChannels.value(name);
+        
+        // Fallback to legacy getters for core channels
+        if (name == "rpm") return getRPM();
+        if (name == "map") return getMAP();
+        if (name == "tps") return getTPS();
+        if (name == "clt" || name == "coolant") return getCoolant();
+        if (name == "iat" || name == "mat") return getIAT();
+        if (name == "afr" || name == "o2") return getAFR();
+        if (name == "battery" || name == "batVoltage") return getBatteryVoltage();
+        if (name == "advance") return getAdvance();
+        
+        return 0.0;
+    }
 
     /**
      * @brief Default constructor — initializes all values to safe defaults
@@ -416,5 +438,12 @@ inline QString connectionStatusToString(ConnectionStatus status) {
         default:                            return "Unknown";
     }
 }
+
+// Make the structs visible to QVariant / QSignalSpy. Direct-connected slots
+// don't need this, but the test suite uses QSignalSpy::takeFirst() to read
+// argument values which requires a registered metatype.
+Q_DECLARE_METATYPE(RealTimeData)
+Q_DECLARE_METATYPE(ECUSignature)
+Q_DECLARE_METATYPE(ConnectionStatus)
 
 #endif // ECUDATA_H

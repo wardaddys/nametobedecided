@@ -19,7 +19,7 @@ SerialManager::SerialManager(QObject *parent)
       m_protocol(new SpeeduinoProtocol(this)),
       m_status(ConnectionStatus::Disconnected), m_awaitingResponse(false),
       m_reconnectAttempts(0), m_maxReconnectAttempts(10),
-      m_isPolling(false), m_pollingInterval(50),
+      m_isPolling(false), m_pollingInterval(20),
       m_lastSecl(0),
       m_packetsSent(0), m_packetsReceived(0), m_crcErrors(0) {
 
@@ -28,6 +28,7 @@ SerialManager::SerialManager(QObject *parent)
     connect(m_heartbeatTimer, &QTimer::timeout, this, &SerialManager::sendHeartbeat);
 
     m_dataPollingTimer = new QTimer(this);
+    m_dataPollingTimer->setSingleShot(true);
     connect(m_dataPollingTimer, &QTimer::timeout, this, &SerialManager::requestRealTimeData);
 
     m_commandTimeoutTimer = new QTimer(this);
@@ -55,7 +56,23 @@ bool SerialManager::loadEcuDefinition(const QString &filePath) {
     }
 }
 
-SerialManager::~SerialManager() { disconnectFromDevice(); }
+void SerialManager::setEcuDefinition(const ECUDefinition &def) {
+    // [PERF] Accept an already-parsed definition instead of re-parsing from disk.
+    // This eliminates 2 of the 3 INI parses that were happening on project load.
+    m_ecuDefinition = def;
+    m_protocol->setEcuDefinition(def);
+    Logger::info("ECU Definition injected into SerialManager + Protocol (no re-parse)");
+}
+
+SerialManager::~SerialManager() {
+    // [BUG-SHUTDOWN] Block all signal emission during destruction.
+    // disconnectFromDevice() emits connectionStatusChanged / disconnected,
+    // which can hit receivers that are already destroyed if destruction
+    // ordering is unfavorable. blockSignals() is the belt-and-braces
+    // companion to the explicit disconnect() in MainWindow::~MainWindow().
+    blockSignals(true);
+    disconnectFromDevice();
+}
 
 QList<QSerialPortInfo> SerialManager::detectDevices() {
     return QSerialPortInfo::availablePorts();
@@ -188,6 +205,7 @@ void SerialManager::disconnectFromDevice() {
     m_receiveBuffer.clear();
     m_isPolling = false;
     m_awaitingResponse = false;
+    m_waitingForRT = false;
     m_signatureValidated = false;
 
     Logger::info("Disconnected from device");
@@ -289,6 +307,41 @@ void SerialManager::sendBurnCommand(quint8 page) {
     queueCommand(cmd);
 }
 
+void SerialManager::sendCalibrationTable(quint8 tableIndex, const QByteArray &tableData) {
+    // Speeduino protocol: 't' command uploads a calibration table.
+    // Command structure: 't', tble_idx (0=CLT, 1=IAT, 2=O2), then the data array.
+    // The data is sent raw (legacy command, no new-protocol framing).
+    // Each entry is a single byte (temperature + CALIBRATION_TEMPERATURE_OFFSET).
+
+    if (!m_signatureValidated && !m_isSimulation) {
+        Logger::error("CALIBRATION BLOCKED: ECU signature has not been validated.");
+        emit error("Calibration upload blocked: ECU signature not validated");
+        return;
+    }
+
+    if (tableIndex > 2) {
+        Logger::error("Invalid calibration table index: " + QString::number(tableIndex));
+        return;
+    }
+
+    // Build the raw payload: 't' + tableIndex + all data bytes
+    QByteArray payload;
+    payload.append('t');
+    payload.append(static_cast<char>(tableIndex));
+    payload.append(tableData);
+
+    SerialCommand cmd;
+    cmd.data = payload;
+    cmd.type = CommandType::CalibUpload;
+    cmd.expectedResponse = -1;
+    cmd.timeoutMs = 5000; // Calibration upload can take a while
+    cmd.retryCount = 1;
+    cmd.isRaw = true; // Legacy command — send raw, no CRC wrapping
+    queueCommand(cmd);
+
+    Logger::info(QString("Sending calibration table %1 (%2 bytes)")
+                 .arg(tableIndex).arg(tableData.size()));
+}
 // ============================================================================
 //  Data Reception — New protocol frame parsing (BUG-002 fix)
 // ============================================================================
@@ -296,31 +349,22 @@ void SerialManager::sendBurnCommand(quint8 page) {
 void SerialManager::onReadyRead() {
     m_receiveBuffer.append(m_serialPort->readAll());
 
-    // DEBUG: Hex dump first 16 bytes of any incoming data to trace ECU behavior
-    if (!m_receiveBuffer.isEmpty()) {
-        Logger::info("RX Buffer (" + QString::number(m_receiveBuffer.size()) + " bytes): " + 
-                     m_receiveBuffer.left(16).toHex(' ').toUpper());
-    }
+    // =======================================================================
+    // [DIRECT-RT] HIGHEST PRIORITY: Handle response to direct 'A' command.
+    // This runs independently of the command queue to ensure the dashboard
+    // always gets data, even when page-reads are queued.
+    // =======================================================================
+    if (m_waitingForRT) {
+        // In legacy mode, the ECU sends raw data bytes directly — NO RC prefix.
+        // Do NOT try to detect 0x06 as RC_OK — it's actually secl (uptime counter)
+        // and will sometimes equal 6, causing a 1-byte shift that corrupts everything.
 
-    // --- UNIVERSAL PACKET RECOGNIZER ---
-    // We try all possible Speeduino response formats in order of likelihood.
-    
-    // 1. Try New Protocol Frame (Wrapped CRC)
-    if (tryParseNewProtocolFrame()) return;
+        int expectedLen = m_ecuDefinition.getOutputChannelsSize();
+        if (expectedLen < 120) expectedLen = 120;
 
-    // 2. Try Raw Telemetry (Awaiting 'A' response)
-    if (m_awaitingResponse && m_currentCommand.type == CommandType::RealTimeData) {
-        
-        // Speeduino may prefix raw responses with 0x06 (RC_OK) in some firmware
-        int offset = 0;
-        if (m_receiveBuffer.size() > 0 && static_cast<uint8_t>(m_receiveBuffer.at(0)) == 0x06) {
-            offset = 1;
-        }
-
-        if (m_receiveBuffer.size() >= (120 + offset)) {
+        if (m_receiveBuffer.size() >= expectedLen) {
             try {
-                // Peek at the data: SECL should be a small counter, MAP should be ~100
-                QByteArray dataToParse = m_receiveBuffer.mid(offset);
+                QByteArray dataToParse = m_receiveBuffer.left(expectedLen);
                 RealTimeData rtData;
                 
                 if (!m_ecuDefinition.getOutputChannels().isEmpty()) {
@@ -331,13 +375,79 @@ void SerialManager::onReadyRead() {
                 }
                 
                 emit dataReceived(rtData);
-                m_receiveBuffer.clear();
+                m_receiveBuffer.clear(); // [RESYNC FIX] Discard any extra trailing bytes to prevent rolling shift
+                m_waitingForRT = false;
+                m_packetsReceived++;
+                
+                // Schedule next poll immediately
+                if (m_isPolling) {
+                    m_dataPollingTimer->start(qMax(5, m_pollingInterval));
+                }
+            } catch (const std::exception& e) {
+                qWarning() << "RT parse exception:" << e.what()
+                           << "buffer[0..31]:" << m_receiveBuffer.left(32).toHex(' ');
+                m_receiveBuffer.clear(); // clear on error to resync
+            } catch (...) {
+                qWarning() << "RT parse unknown exception"
+                           << "buffer[0..31]:" << m_receiveBuffer.left(32).toHex(' ');
+                m_receiveBuffer.clear(); // clear on error to resync
+            }
+            return;
+        }
+        
+        // Not enough bytes yet — check for timeout (200ms)
+        if (m_lastCommandSent.msecsTo(QDateTime::currentDateTime()) > 200) {
+            m_waitingForRT = false;
+            m_receiveBuffer.clear();
+            if (m_isPolling) {
+                m_dataPollingTimer->start(m_pollingInterval);
+            }
+        }
+        return;
+    }
+
+    // --- COMMAND QUEUE RESPONSE HANDLERS (for signature, page reads, etc.) ---
+    
+    // 1. Try New Protocol Frame (Wrapped CRC) — only for non-raw commands
+    if (!m_awaitingResponse || !m_currentCommand.isRaw) {
+        if (tryParseNewProtocolFrame()) return;
+    }
+
+    // 2. Legacy raw 'A' response (if sent through command queue — backward compat)
+    if (m_awaitingResponse && m_currentCommand.type == CommandType::RealTimeData) {
+        int rcOffset = 0;
+        if (m_receiveBuffer.size() > 0 && static_cast<uint8_t>(m_receiveBuffer.at(0)) == 0x06) {
+            rcOffset = 1;
+        }
+        int expectedLen = m_ecuDefinition.getOutputChannelsSize();
+        if (expectedLen < 120) expectedLen = 120;
+
+        if (m_receiveBuffer.size() >= (expectedLen + rcOffset)) {
+            try {
+                QByteArray dataToParse = m_receiveBuffer.mid(rcOffset, expectedLen);
+                RealTimeData rtData;
+                if (!m_ecuDefinition.getOutputChannels().isEmpty()) {
+                    SpeeduinoProtocol::DynamicRTData dyn = m_protocol->parseRealTimeDataDynamic(dataToParse, m_ecuDefinition);
+                    rtData = dyn.legacy;
+                } else {
+                    rtData = m_protocol->parseRealTimeData(dataToParse);
+                }
+                emit dataReceived(rtData);
+                m_receiveBuffer.remove(0, expectedLen + rcOffset);
                 m_awaitingResponse = false;
                 m_commandTimeoutTimer->stop();
+                if (m_isPolling) {
+                    m_dataPollingTimer->start(qMax(5, m_pollingInterval));
+                }
                 processCommandQueue();
                 return;
+            } catch (const std::exception& e) {
+                qWarning() << "Queued RT parse exception:" << e.what()
+                           << "buffer[0..31]:" << m_receiveBuffer.left(32).toHex(' ');
+                m_receiveBuffer.remove(0, 1);
             } catch (...) {
-                // If it looks like a packet but parsing failed, slide the window
+                qWarning() << "Queued RT parse unknown exception"
+                           << "buffer[0..31]:" << m_receiveBuffer.left(32).toHex(' ');
                 m_receiveBuffer.remove(0, 1);
             }
         }
@@ -359,8 +469,42 @@ void SerialManager::onReadyRead() {
     }
 
     if (m_awaitingResponse && m_currentCommand.isRaw) {
-        // Handle 'f' (Capabilities)
-        if (m_currentCommand.type == CommandType::Capabilities && m_receiveBuffer.size() >= 5) {
+        // Handle 'f' (Capabilities) — 6 bytes: RC + proto + blockFact(2) + tblBlockFact(2)
+        if (m_currentCommand.type == CommandType::Capabilities && m_receiveBuffer.size() >= 6) {
+            processResponse(m_receiveBuffer);
+            m_receiveBuffer.clear();
+            m_awaitingResponse = false;
+            m_commandTimeoutTimer->stop();
+            processCommandQueue();
+            return;
+        }
+        
+        // Handle 'C' TestComms — 2 bytes: [0x00, 0xFF] or just any response
+        if (m_currentCommand.type == CommandType::TestComms && m_receiveBuffer.size() >= 1) {
+            processResponse(m_receiveBuffer);
+            m_receiveBuffer.clear();
+            m_awaitingResponse = false;
+            m_commandTimeoutTimer->stop();
+            processCommandQueue();
+            return;
+        }
+        
+        // Handle 'p' ReadPage — RC byte + requested data
+        if (m_currentCommand.type == CommandType::ReadPage && m_receiveBuffer.size() >= 2) {
+            // First byte should be RC_OK (0x06), rest is page data
+            if (static_cast<uint8_t>(m_receiveBuffer.at(0)) == SpeeduinoRC::RC_OK) {
+                processResponse(m_receiveBuffer);
+                m_receiveBuffer.clear();
+                m_awaitingResponse = false;
+                m_commandTimeoutTimer->stop();
+                processCommandQueue();
+                return;
+            }
+        }
+        
+        // Handle 'M' WritePage / 'b' BurnPage — just RC byte
+        if ((m_currentCommand.type == CommandType::WritePage || 
+             m_currentCommand.type == CommandType::BurnPage) && m_receiveBuffer.size() >= 1) {
             processResponse(m_receiveBuffer);
             m_receiveBuffer.clear();
             m_awaitingResponse = false;
@@ -370,13 +514,7 @@ void SerialManager::onReadyRead() {
         }
     }
 
-    // --- CASE 3: FALLBACK / ERROR RECOVERY ---
-    if (m_receiveBuffer.size() > 1024) {
-        Logger::warning("Receive buffer overflow, clearing.");
-        m_receiveBuffer.clear();
-    }
-
-    // --- CASE 3: FALLBACK / ERROR RECOVERY ---
+    // --- FALLBACK / ERROR RECOVERY ---
     if (m_receiveBuffer.size() > 1024) {
         Logger::warning("Receive buffer overflow, clearing.");
         m_receiveBuffer.clear();
@@ -459,6 +597,12 @@ bool SerialManager::tryParseNewProtocolFrame() {
             
             m_awaitingResponse = false;
             m_commandTimeoutTimer->stop();
+            
+            if (m_isPolling && m_currentCommand.type == CommandType::RealTimeData) {
+                int nextPoll = qMax(5, m_pollingInterval);
+                m_dataPollingTimer->start(nextPoll);
+            }
+            
             processCommandQueue();
             return true;
         } else {
@@ -733,6 +877,11 @@ void SerialManager::sendCommand(const QByteArray &command) {
 
         m_packetsSent++;
         m_awaitingResponse = false;
+        
+        if (m_isPolling && m_currentCommand.type == CommandType::RealTimeData) {
+            m_dataPollingTimer->start(m_pollingInterval);
+        }
+        
         processCommandQueue();
         return;
     }
@@ -748,21 +897,8 @@ void SerialManager::sendCommand(const QByteArray &command) {
 
         m_serialPort->write(packet);
         m_serialPort->flush();
-        
-        // Force the bits out the wire immediately
-        if (!m_serialPort->waitForBytesWritten(100)) {
-            Logger::warning("Hardware write timeout on " + m_portName);
-        }
 
         m_packetsSent++;
-        
-        // Log the first byte for debugging
-        uint8_t opcode = command.isEmpty() ? 0 : static_cast<uint8_t>(command.at(0));
-        Logger::info(QString("TX: Sent %1 command '%2' (0x%3) - Packet size: %4")
-                     .arg(m_currentCommand.isRaw ? "Legacy" : "Wrapped")
-                     .arg(QChar(opcode))
-                     .arg(opcode, 2, 16, QChar('0'))
-                     .arg(packet.size()));
     }
 }
 
@@ -783,7 +919,20 @@ void SerialManager::onCommandTimeout() {
         processCommandQueue();
     } else {
         Logger::error("Command failed after retries");
+        
+        if (m_status == ConnectionStatus::Connecting) {
+            emit error("Connection failed: ECU did not respond to handshake.");
+            disconnectFromDevice();
+            return;
+        }
+
         processCommandQueue();
+        
+        // [FIX-TX-1] ALWAYS restart polling after any timeout, not just RT timeouts.
+        // Page-read timeouts were killing the polling loop permanently.
+        if (m_isPolling) {
+            m_dataPollingTimer->start(m_pollingInterval);
+        }
     }
 }
 
@@ -847,20 +996,27 @@ void SerialManager::processResponse(const QByteArray &payload) {
                     return;
                 }
                 
-                // Signature validated — store it, then query capabilities
+                // Signature validated — use defaults and go straight to Connected.
+                // The 'f' capabilities query is unreliable in legacy mode, and we
+                // already know it's Speeduino v2 from the signature string.
                 Logger::info("Signature validation passed: " + validation.message);
                 m_signatureValidated = true;
                 m_signature = sig;
-                Logger::info("Signature OK: " + sig.toString() + " — querying capabilities...");
+                m_signature.protocolVersion = 2;
+                m_signature.blockingFactor = 256;
+                m_signature.tableBlockingFactor = 256;
+                Logger::info("Signature OK: " + sig.toString());
 
-                // Queue 'f' capabilities request before marking connected
-                SerialCommand capCmd;
-                capCmd.data = m_protocol->createCapabilitiesRequest(); // 'f'
-                capCmd.type = CommandType::Capabilities;
-                capCmd.expectedResponse = -1;
-                capCmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
-                capCmd.retryCount = ProtocolTiming::RETRY_COUNT;
-                queueCommand(capCmd);
+                // Mark connection as fully established — skip 'f' query
+                m_status = ConnectionStatus::Connected;
+                emit connectionStatusChanged(m_status);
+                emit connected(m_signature);
+                Logger::info("Connected to ECU: " + m_signature.toString());
+
+                if (m_isPolling) {
+                    m_dataPollingTimer->start(m_pollingInterval);
+                }
+                m_heartbeatTimer->start();
             } else {
                 Logger::error("Invalid ECU signature");
                 disconnectFromDevice();
@@ -957,6 +1113,16 @@ void SerialManager::processResponse(const QByteArray &payload) {
             break;
         }
 
+        case CommandType::ToothLog: {
+            // Payload: [RC] + tooth timing data (pairs of U16LE)
+            if (payload.size() > 1) {
+                QByteArray toothData = payload.mid(1); // Skip RC byte
+                Logger::info(QString("Tooth log received: %1 bytes").arg(toothData.size()));
+                emit toothDataReceived(toothData);
+            }
+            break;
+        }
+
         default: {
             // Unknown command type — emit as generic table response for backward compat
             emit tableResponseReceived(0, 0, payload);
@@ -970,39 +1136,42 @@ void SerialManager::processResponse(const QByteArray &payload) {
 // ============================================================================
 
 void SerialManager::sendHeartbeat() {
-    if (!m_isPolling) {
-        if (m_commandQueue.isEmpty() && !m_awaitingResponse) {
-            SerialCommand cmd;
-            cmd.data = m_protocol->createTestCommsRequest(); // 'C' test comms
-            cmd.type = CommandType::TestComms;
-            cmd.expectedResponse = -1;
-            cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
-            cmd.retryCount = 0;
-            queueCommand(cmd);
-        }
+    // [FIX-TX-2] Only send heartbeat when NOT polling.
+    // When polling is active, the 'A' commands already keep the link alive.
+    // Injecting 'C' during polling starves the RT data loop.
+    if (m_isPolling) return;
+    
+    if (m_commandQueue.isEmpty() && !m_awaitingResponse) {
+        SerialCommand cmd;
+        cmd.data = m_protocol->createTestCommsRequest(); // 'C' test comms
+        cmd.type = CommandType::TestComms;
+        cmd.expectedResponse = -1;
+        cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
+        cmd.retryCount = 0;
+        queueCommand(cmd);
     }
 }
 
 void SerialManager::requestRealTimeData() {
-    // Only poll if we are fully connected and validated
-    if (m_status != ConnectionStatus::Connected) return;
-
-    // If TX has been dead for too long (>200ms), force-clear the waiting flag
-    if (m_awaitingResponse && m_lastCommandSent.msecsTo(QDateTime::currentDateTime()) > 200) {
-        Logger::warning("TX Lock detected! Force-clearing awaitingResponse flag.");
-        m_awaitingResponse = false;
+    // Only poll if we are fully connected
+    if (m_status != ConnectionStatus::Connected) {
+        if (m_isPolling) m_dataPollingTimer->start(m_pollingInterval);
+        return;
     }
 
-    if (m_commandQueue.size() < 2 && !m_awaitingResponse) {
-        SerialCommand cmd;
-        cmd.data = "A"; // Speeduino Real-time data request
-        cmd.type = CommandType::RealTimeData;
-        cmd.isRaw = true; // ALWAYS use raw 'A' for maximum compatibility (matches TunerStudio)
-        cmd.timeoutMs = 120; // Fast timeout for 30Hz polling
-        cmd.retryCount = 0;
-        queueCommand(cmd);
-        m_lastCommandSent = QDateTime::currentDateTime();
+    if (!m_serialPort->isOpen()) {
+        if (m_isPolling) m_dataPollingTimer->start(m_pollingInterval);
+        return;
     }
+
+    // [DIRECT-RT] Bypass command queue entirely.
+    // Send raw 'A' directly to the serial port — exactly like TunerStudio.
+    // This ensures RT data polling is NEVER starved by page reads or other commands.
+    m_serialPort->write("A", 1);
+    m_serialPort->flush();
+    m_waitingForRT = true;
+    m_lastCommandSent = QDateTime::currentDateTime();
+    m_packetsSent++;
 }
 
 // ============================================================================
