@@ -1,6 +1,9 @@
 #include "DashboardWidget.h"
 #include "TunerGauge.h"
 #include "ThrottleBodyWidget.h"
+#include "MapSensorWidget.h"
+#include "TempSensorWidget.h"
+#include "InjectorVisualWidget.h"
 #include "core/TunerProColors.h"
 #include "core/ECUSettingsManager.h"
 #include "core/SerialManager.h"
@@ -61,6 +64,7 @@ CalibrationOverlay::CalibrationOverlay(QWidget *parent) : QWidget(parent) {
     buildTpsPanel();
     buildMapPanel();
     buildTempPanel();
+    buildDutyPanel();
 }
 
 void CalibrationOverlay::buildTpsPanel() {
@@ -417,26 +421,66 @@ void CalibrationOverlay::buildTpsPanel() {
 }
 
 void CalibrationOverlay::buildMapPanel() {
+    const QString CLR_BG_PANEL = "#12161A";
+    const QString CLR_INSET    = "#0B0E12";
+    const QString CLR_BORDER   = "#1E2228";
+    const QString CLR_BORDER2  = "#23272E";
+    const QString CLR_LABEL    = "#B0B5C0";
+    const QString CLR_VALUE    = "#FFFFFF";
+    const QString CLR_CYAN     = "#22D3EE";
+    const QString CLR_NEON     = "#00C853";
+    const QString FONT_SANS    = "'Inter', system-ui, sans-serif";
+    const QString FONT_MONO    = "'JetBrains Mono', monospace";
+
     m_mapPanel = new QWidget();
+    m_mapPanel->setStyleSheet(QString("QWidget { background-color: %1; }").arg(CLR_BG_PANEL));
+
     QVBoxLayout *l = new QVBoxLayout(m_mapPanel);
     l->setContentsMargins(0, 0, 0, 0);
+    l->setSpacing(0);
 
-    QFormLayout *form = new QFormLayout();
-    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // Two-column layout matching the TPS panel style
+    QHBoxLayout *body = new QHBoxLayout();
+    body->setContentsMargins(28, 8, 28, 8);
+    body->setSpacing(24);
+
+    // ── LEFT COLUMN: controls ──────────────────────────────────────────
+    QWidget *leftCol = new QWidget();
+    leftCol->setStyleSheet("background: transparent;");
+    QVBoxLayout *left = new QVBoxLayout(leftCol);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->setSpacing(18);
+
+    const QString labelCss = QString(
+        "color: %1; font-family: %2; font-size: 11px; letter-spacing: 1.4px; "
+        "background: transparent; border: none;").arg(CLR_LABEL, FONT_SANS);
+    const QString fieldCss = QString(
+        "QComboBox, QLineEdit { background: %1; color: %2; border: 1px solid %3; "
+        "border-radius: 6px; padding: 8px 12px; font-family: %4; font-size: 14px; }"
+        "QComboBox:focus, QLineEdit:focus { border-color: %5; }"
+        "QComboBox::drop-down { border: none; }"
+        "QComboBox QAbstractItemView { background: %1; color: %2; selection-background-color: %5; }")
+        .arg(CLR_INSET, CLR_VALUE, CLR_BORDER, FONT_MONO, CLR_CYAN);
+
+    // Sensor selector
+    auto makeRow = [&](const QString &lbl, QWidget *field) {
+        QWidget *w = new QWidget(); w->setStyleSheet("background:transparent;");
+        QVBoxLayout *v = new QVBoxLayout(w); v->setContentsMargins(0,0,0,0); v->setSpacing(6);
+        QLabel *lab = new QLabel(lbl); lab->setStyleSheet(labelCss);
+        v->addWidget(lab); v->addWidget(field);
+        return w;
+    };
 
     m_mapSensorCombo = new QComboBox();
     m_mapSensorCombo->addItems({"GM 1-BAR", "GM 2-BAR", "GM 3-BAR", "MPX4115", "MPX4250", "Custom"});
-    m_mapSensorCombo->setStyleSheet(QString("background: %1; color: %2; padding: 4px; border: 1px solid %3; border-radius: 4px;")
-                                    .arg(TunerProColors::BG_BASE).arg(TunerProColors::TEXT_PRIMARY).arg(TunerProColors::BORDER_SUBTLE));
-    form->addRow("Common Pressure Sensors", m_mapSensorCombo);
+    m_mapSensorCombo->setStyleSheet(fieldCss);
+    left->addWidget(makeRow("COMMON PRESSURE SENSORS", m_mapSensorCombo));
 
-    m_map0Edit = new QLineEdit();
-    m_map0Edit->setStyleSheet(m_mapSensorCombo->styleSheet());
-    form->addRow("kPa At 0.0 Volts", m_map0Edit);
+    m_map0Edit = new QLineEdit(); m_map0Edit->setStyleSheet(fieldCss);
+    left->addWidget(makeRow("kPa AT 0.0 VOLTS", m_map0Edit));
 
-    m_map5Edit = new QLineEdit();
-    m_map5Edit->setStyleSheet(m_mapSensorCombo->styleSheet());
-    form->addRow("kPa At 5.0 Volts", m_map5Edit);
+    m_map5Edit = new QLineEdit(); m_map5Edit->setStyleSheet(fieldCss);
+    left->addWidget(makeRow("kPa AT 5.0 VOLTS", m_map5Edit));
 
     connect(m_mapSensorCombo, &QComboBox::currentTextChanged, this, [this](const QString &name) {
         if (name == "GM 1-BAR")        { m_map0Edit->setText("10");  m_map5Edit->setText("105"); }
@@ -444,78 +488,173 @@ void CalibrationOverlay::buildMapPanel() {
         else if (name == "GM 3-BAR")   { m_map0Edit->setText("4");   m_map5Edit->setText("304"); }
         else if (name == "MPX4115")    { m_map0Edit->setText("10");  m_map5Edit->setText("115"); }
         else if (name == "MPX4250")    { m_map0Edit->setText("20");  m_map5Edit->setText("250"); }
+        if (m_mapVisual) m_mapVisual->setKpa(0.0);
     });
 
-    l->addLayout(form);
-
-    QHBoxLayout *liveLay = new QHBoxLayout();
+    // Live kPa readout + bar
+    QWidget *liveWrap = new QWidget(); liveWrap->setStyleSheet("background:transparent;");
+    QVBoxLayout *lv = new QVBoxLayout(liveWrap); lv->setContentsMargins(0,0,0,0); lv->setSpacing(6);
     m_mapLiveKpaLbl = new QLabel("MAP: --- kPa");
-    m_mapLiveKpaLbl->setStyleSheet(QString("font-family: 'JetBrains Mono'; font-size: 12px; color: %1;").arg(TunerProColors::TEXT_SECONDARY));
-    liveLay->addStretch();
-    liveLay->addWidget(m_mapLiveKpaLbl);
-    l->addLayout(liveLay);
-
+    m_mapLiveKpaLbl->setStyleSheet(QString(
+        "color: %1; font-family: %2; font-size: 15px; font-weight: 600; background:transparent;")
+        .arg(CLR_CYAN, FONT_MONO));
+    lv->addWidget(m_mapLiveKpaLbl);
     m_mapLiveBar = new QProgressBar();
-    m_mapLiveBar->setRange(0, 300);
-    m_mapLiveBar->setValue(0);
-    m_mapLiveBar->setStyleSheet(QString("QProgressBar { border: none; background: %1; height: 8px; border-radius: 4px; } QProgressBar::chunk { background: #0088FF; border-radius: 4px; }").arg(TunerProColors::BG_BASE));
-    m_mapLiveBar->setTextVisible(false);
-    l->addWidget(m_mapLiveBar);
+    m_mapLiveBar->setRange(0, 300); m_mapLiveBar->setValue(0);
+    m_mapLiveBar->setTextVisible(false); m_mapLiveBar->setFixedHeight(10);
+    m_mapLiveBar->setStyleSheet(QString(
+        "QProgressBar { border:1px solid %1; background:%2; border-radius:5px; }"
+        "QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #0891B2, stop:0.6 %3, stop:1 #67E8F9); border-radius:5px; }")
+        .arg(CLR_BORDER, CLR_INSET, CLR_CYAN));
+    lv->addWidget(m_mapLiveBar);
+    left->addWidget(liveWrap);
 
-    l->addStretch();
+    left->addStretch();
 
-    QHBoxLayout *btnLay = new QHBoxLayout();
-    btnLay->addStretch();
+    // Footer buttons
     QPushButton *burnBtn = new QPushButton("Burn");
-    burnBtn->setStyleSheet(QString("background: %1; color: %2; padding: 6px 16px; border-radius: 4px;").arg(TunerProColors::WARN).arg(TunerProColors::BG_BASE));
-    QPushButton *closeBtn = new QPushButton("Close");
-    closeBtn->setStyleSheet(QString("background: %1; color: %2; padding: 6px 16px; border-radius: 4px;").arg(TunerProColors::BG_BASE).arg(TunerProColors::TEXT_PRIMARY));
-    connect(closeBtn, &QPushButton::clicked, this, &CalibrationOverlay::closeOverlay);
-    connect(burnBtn, &QPushButton::clicked, this, &CalibrationOverlay::onMapBurn);
-    btnLay->addWidget(burnBtn);
-    btnLay->addWidget(closeBtn);
-    l->addLayout(btnLay);
+    burnBtn->setCursor(Qt::PointingHandCursor);
+    burnBtn->setStyleSheet(QString(
+        "QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #F59E0B,stop:1 #B45309); "
+        "color: #000; border:none; border-radius:6px; padding:9px 20px; font-family:%1; "
+        "font-size:13px; font-weight:700; }")
+        .arg(FONT_SANS));
+    QPushButton *closeBtn2 = new QPushButton("Close");
+    closeBtn2->setCursor(Qt::PointingHandCursor);
+    closeBtn2->setStyleSheet(QString(
+        "QPushButton { background:transparent; color:%1; border:1px solid #2A3038; "
+        "border-radius:6px; padding:9px 20px; font-family:%2; font-size:13px; }")
+        .arg(CLR_LABEL, FONT_SANS));
+    connect(closeBtn2, &QPushButton::clicked, this, &CalibrationOverlay::closeOverlay);
+    connect(burnBtn,   &QPushButton::clicked, this, &CalibrationOverlay::onMapBurn);
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    btnRow->addStretch(); btnRow->addWidget(burnBtn); btnRow->addSpacing(8); btnRow->addWidget(closeBtn2);
+    left->addLayout(btnRow);
+
+    body->addWidget(leftCol, 1);
+
+    // ── RIGHT COLUMN: 3D pressure dial ────────────────────────────────
+    QWidget *rightCol = new QWidget();
+    rightCol->setStyleSheet(QString(
+        "background: qradialgradient(cx:0.5,cy:0.4,radius:0.9,"
+        "stop:0 #15191F,stop:1 #0B0D11);"
+        "border:1px solid #1F242C; border-radius:8px;"));
+    rightCol->setMinimumWidth(300);
+
+    QVBoxLayout *right = new QVBoxLayout(rightCol);
+    right->setContentsMargins(12, 12, 12, 12);
+    right->setSpacing(8);
+
+    QLabel *vizTitle = new QLabel("MAP  ·  LIVE VIEW");
+    vizTitle->setStyleSheet(QString(
+        "color:%1; font-family:%2; font-size:10px; letter-spacing:1.5px; background:transparent;")
+        .arg(CLR_LABEL, FONT_MONO));
+    right->addWidget(vizTitle);
+
+    m_mapVisual = new MapSensorWidget(rightCol);
+    m_mapVisual->setStyleSheet("background: transparent;");
+    right->addWidget(m_mapVisual, 1, Qt::AlignHCenter);
+
+    body->addWidget(rightCol, 1);
+    l->addLayout(body);
+
+    // Footer status bar
+    QWidget *footer = new QWidget();
+    footer->setStyleSheet(QString("background:#13161A; border-top:1px solid %1;").arg(CLR_BORDER2));
+    footer->setFixedHeight(48);
+    QHBoxLayout *fh = new QHBoxLayout(footer);
+    fh->setContentsMargins(28, 0, 28, 0);
+    QLabel *stat = new QLabel("SENSOR  ·  CALIBRATION");
+    stat->setStyleSheet(QString("color:#3A4252; font-family:%1; font-size:10px; letter-spacing:1.4px; background:transparent;").arg(FONT_MONO));
+    fh->addWidget(stat); fh->addStretch();
+    l->addWidget(footer);
 
     m_stack->addWidget(m_mapPanel);
 }
 
 void CalibrationOverlay::buildTempPanel() {
+    const QString CLR_BG_PANEL = "#12161A";
+    const QString CLR_INSET    = "#0B0E12";
+    const QString CLR_BORDER   = "#1E2228";
+    const QString CLR_BORDER2  = "#23272E";
+    const QString CLR_LABEL    = "#B0B5C0";
+    const QString CLR_VALUE    = "#FFFFFF";
+    const QString CLR_CYAN     = "#22D3EE";
+    const QString CLR_ORANGE   = "#F59E0B";
+    const QString CLR_NEON     = "#00C853";
+    const QString FONT_SANS    = "'Inter', system-ui, sans-serif";
+    const QString FONT_MONO    = "'JetBrains Mono', monospace";
+
     m_tempPanel = new QWidget();
+    m_tempPanel->setStyleSheet(QString("QWidget { background-color: %1; }").arg(CLR_BG_PANEL));
+
     QVBoxLayout *l = new QVBoxLayout(m_tempPanel);
     l->setContentsMargins(0, 0, 0, 0);
+    l->setSpacing(0);
 
-    QString fieldStyle = QString("background: %1; color: %2; padding: 4px; border: 1px solid %3; border-radius: 4px;")
-                         .arg(TunerProColors::BG_BASE).arg(TunerProColors::TEXT_PRIMARY).arg(TunerProColors::BORDER_SUBTLE);
+    // Two-column layout
+    QHBoxLayout *body = new QHBoxLayout();
+    body->setContentsMargins(28, 8, 28, 8);
+    body->setSpacing(24);
 
-    QFormLayout *form = new QFormLayout();
-    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // ── LEFT COLUMN: controls ──────────────────────────────────────────
+    QWidget *leftCol = new QWidget();
+    leftCol->setStyleSheet("background:transparent;");
+    QVBoxLayout *left = new QVBoxLayout(leftCol);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->setSpacing(14);
+
+    const QString labelCss = QString(
+        "color:%1; font-family:%2; font-size:11px; letter-spacing:1.4px; background:transparent; border:none;")
+        .arg(CLR_LABEL, FONT_SANS);
+    const QString fieldCss = QString(
+        "QComboBox, QLineEdit { background:%1; color:%2; border:1px solid %3; "
+        "border-radius:6px; padding:7px 12px; font-family:%4; font-size:13px; }"
+        "QComboBox:focus, QLineEdit:focus { border-color:%5; }"
+        "QComboBox::drop-down { border:none; }"
+        "QComboBox QAbstractItemView { background:%1; color:%2; selection-background-color:%5; }")
+        .arg(CLR_INSET, CLR_VALUE, CLR_BORDER, FONT_MONO, CLR_CYAN);
+
+    auto makeRow = [&](const QString &lbl, QWidget *field) {
+        QWidget *w = new QWidget(); w->setStyleSheet("background:transparent;");
+        QVBoxLayout *v = new QVBoxLayout(w); v->setContentsMargins(0,0,0,0); v->setSpacing(5);
+        QLabel *lab = new QLabel(lbl); lab->setStyleSheet(labelCss);
+        v->addWidget(lab); v->addWidget(field);
+        return w;
+    };
 
     m_tempSensorCombo = new QComboBox();
     m_tempSensorCombo->addItems({"GM", "RX-7 S4/S5", "Ford", "Bosch", "Custom"});
-    m_tempSensorCombo->setStyleSheet(fieldStyle);
-    form->addRow("Common Sensor Values", m_tempSensorCombo);
+    m_tempSensorCombo->setStyleSheet(fieldCss);
+    left->addWidget(makeRow("COMMON SENSOR VALUES", m_tempSensorCombo));
 
-    m_tempBiasEdit = new QLineEdit();
-    m_tempBiasEdit->setStyleSheet(fieldStyle);
-    form->addRow("Bias Resistor (Ohms)", m_tempBiasEdit);
+    m_tempBiasEdit = new QLineEdit(); m_tempBiasEdit->setStyleSheet(fieldCss);
+    left->addWidget(makeRow("BIAS RESISTOR (OHMS)", m_tempBiasEdit));
 
-    QLabel *calHeader = new QLabel("3-Point Calibration");
-    calHeader->setStyleSheet(QString("font-weight: bold; color: %1;").arg(TunerProColors::SAFE));
-    l->addWidget(calHeader);
+    // 3-point calibration header
+    QLabel *calHeader = new QLabel("3-POINT CALIBRATION");
+    calHeader->setStyleSheet(QString("color:%1; font-family:%2; font-size:11px; font-weight:700; "
+                                    "letter-spacing:1.4px; background:transparent;").arg(CLR_NEON, FONT_SANS));
+    left->addWidget(calHeader);
 
-    m_tempR1Edit = new QLineEdit();   m_tempR1Edit->setStyleSheet(fieldStyle);
-    m_tempT1Edit = new QLineEdit();   m_tempT1Edit->setStyleSheet(fieldStyle);
-    m_tempR2Edit = new QLineEdit();   m_tempR2Edit->setStyleSheet(fieldStyle);
-    m_tempT2Edit = new QLineEdit();   m_tempT2Edit->setStyleSheet(fieldStyle);
-    m_tempR3Edit = new QLineEdit();   m_tempR3Edit->setStyleSheet(fieldStyle);
-    m_tempT3Edit = new QLineEdit();   m_tempT3Edit->setStyleSheet(fieldStyle);
+    m_tempR1Edit = new QLineEdit(); m_tempR1Edit->setStyleSheet(fieldCss);
+    m_tempT1Edit = new QLineEdit(); m_tempT1Edit->setStyleSheet(fieldCss);
+    m_tempR2Edit = new QLineEdit(); m_tempR2Edit->setStyleSheet(fieldCss);
+    m_tempT2Edit = new QLineEdit(); m_tempT2Edit->setStyleSheet(fieldCss);
+    m_tempR3Edit = new QLineEdit(); m_tempR3Edit->setStyleSheet(fieldCss);
+    m_tempT3Edit = new QLineEdit(); m_tempT3Edit->setStyleSheet(fieldCss);
 
-    form->addRow("Resistance 1 (Ohm)", m_tempR1Edit);
-    form->addRow("Temperature 1 (C)", m_tempT1Edit);
-    form->addRow("Resistance 2 (Ohm)", m_tempR2Edit);
-    form->addRow("Temperature 2 (C)", m_tempT2Edit);
-    form->addRow("Resistance 3 (Ohm)", m_tempR3Edit);
-    form->addRow("Temperature 3 (C)", m_tempT3Edit);
+    auto makePair = [&](const QString &rl, QLineEdit *re, const QString &tl, QLineEdit *te) {
+        QWidget *w = new QWidget(); w->setStyleSheet("background:transparent;");
+        QHBoxLayout *h = new QHBoxLayout(w); h->setContentsMargins(0,0,0,0); h->setSpacing(10);
+        h->addWidget(makeRow(rl, re), 1);
+        h->addWidget(makeRow(tl, te), 1);
+        return w;
+    };
+    left->addWidget(makePair("RESISTANCE 1 (Ω)", m_tempR1Edit, "TEMP 1 (°C)", m_tempT1Edit));
+    left->addWidget(makePair("RESISTANCE 2 (Ω)", m_tempR2Edit, "TEMP 2 (°C)", m_tempT2Edit));
+    left->addWidget(makePair("RESISTANCE 3 (Ω)", m_tempR3Edit, "TEMP 3 (°C)", m_tempT3Edit));
 
     connect(m_tempSensorCombo, &QComboBox::currentTextChanged, this, [this](const QString &name) {
         auto fill = [this](const QString &bias, const QString &r1, const QString &t1,
@@ -525,43 +664,211 @@ void CalibrationOverlay::buildTempPanel() {
             m_tempR2Edit->setText(r2); m_tempT2Edit->setText(t2);
             m_tempR3Edit->setText(r3); m_tempT3Edit->setText(t3);
         };
-        if (name == "GM")          fill("2490", "9420", "0", "2490", "25", "667",  "80");
-        else if (name == "RX-7 S4/S5") fill("2490", "20000", "0", "5200", "25", "1300", "70");
-        else if (name == "Ford")   fill("2490", "95540", "0", "37300","25", "5570", "80");
-        else if (name == "Bosch")  fill("2490", "5896", "0",  "2500", "20", "323",  "100");
+        if (name == "GM")              fill("2490", "9420",  "0", "2490",  "25", "667",  "80");
+        else if (name == "RX-7 S4/S5") fill("2490", "20000", "0", "5200",  "25", "1300", "70");
+        else if (name == "Ford")       fill("2490", "95540", "0", "37300", "25", "5570", "80");
+        else if (name == "Bosch")      fill("2490", "5896",  "0", "2500",  "20", "323",  "100");
     });
 
-    l->addLayout(form);
-
-    QHBoxLayout *liveLay = new QHBoxLayout();
+    // Live bar + label
+    QWidget *liveWrap = new QWidget(); liveWrap->setStyleSheet("background:transparent;");
+    QVBoxLayout *lv = new QVBoxLayout(liveWrap); lv->setContentsMargins(0,0,0,0); lv->setSpacing(6);
     m_tempLiveLbl = new QLabel("Temp: --- C");
-    m_tempLiveLbl->setStyleSheet(QString("font-family: 'JetBrains Mono'; font-size: 12px; color: %1;").arg(TunerProColors::TEXT_SECONDARY));
-    liveLay->addStretch();
-    liveLay->addWidget(m_tempLiveLbl);
-    l->addLayout(liveLay);
-
+    m_tempLiveLbl->setStyleSheet(QString(
+        "color:%1; font-family:%2; font-size:15px; font-weight:600; background:transparent;")
+        .arg(CLR_ORANGE, FONT_MONO));
+    lv->addWidget(m_tempLiveLbl);
     m_tempLiveBar = new QProgressBar();
-    m_tempLiveBar->setRange(-40, 215);
-    m_tempLiveBar->setValue(-40);
-    m_tempLiveBar->setStyleSheet(QString("QProgressBar { border: none; background: %1; height: 8px; border-radius: 4px; } QProgressBar::chunk { background: #FF8800; border-radius: 4px; }").arg(TunerProColors::BG_BASE));
-    m_tempLiveBar->setTextVisible(false);
-    l->addWidget(m_tempLiveBar);
+    m_tempLiveBar->setRange(-40, 215); m_tempLiveBar->setValue(-40);
+    m_tempLiveBar->setTextVisible(false); m_tempLiveBar->setFixedHeight(10);
+    m_tempLiveBar->setStyleSheet(QString(
+        "QProgressBar { border:1px solid %1; background:%2; border-radius:5px; }"
+        "QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #2563EB,stop:0.45 #22C55E,stop:0.75 %3,stop:1 #EF4444); border-radius:5px; }")
+        .arg(CLR_BORDER, CLR_INSET, CLR_ORANGE));
+    lv->addWidget(m_tempLiveBar);
+    left->addWidget(liveWrap);
+    left->addStretch();
 
-    l->addStretch();
-
-    QHBoxLayout *btnLay = new QHBoxLayout();
-    btnLay->addStretch();
+    // Footer buttons
     QPushButton *burnBtn = new QPushButton("Write to Controller");
-    burnBtn->setStyleSheet(QString("background: %1; color: %2; padding: 6px 16px; border-radius: 4px; font-weight: bold;").arg(TunerProColors::WARN).arg(TunerProColors::BG_BASE));
-    QPushButton *closeBtn = new QPushButton("Close");
-    closeBtn->setStyleSheet(QString("background: %1; color: %2; padding: 6px 16px; border-radius: 4px;").arg(TunerProColors::BG_BASE).arg(TunerProColors::TEXT_PRIMARY));
-    connect(closeBtn, &QPushButton::clicked, this, &CalibrationOverlay::closeOverlay);
-    connect(burnBtn, &QPushButton::clicked, this, &CalibrationOverlay::onTempBurn);
-    btnLay->addWidget(burnBtn);
-    btnLay->addWidget(closeBtn);
-    l->addLayout(btnLay);
+    burnBtn->setCursor(Qt::PointingHandCursor);
+    burnBtn->setStyleSheet(QString(
+        "QPushButton { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #F59E0B,stop:1 #B45309); "
+        "color:#000; border:none; border-radius:6px; padding:9px 20px; "
+        "font-family:%1; font-size:13px; font-weight:700; }").arg(FONT_SANS));
+    QPushButton *closeBtn2 = new QPushButton("Close");
+    closeBtn2->setCursor(Qt::PointingHandCursor);
+    closeBtn2->setStyleSheet(QString(
+        "QPushButton { background:transparent; color:%1; border:1px solid #2A3038; "
+        "border-radius:6px; padding:9px 20px; font-family:%2; font-size:13px; }")
+        .arg(CLR_LABEL, FONT_SANS));
+    connect(closeBtn2, &QPushButton::clicked, this, &CalibrationOverlay::closeOverlay);
+    connect(burnBtn,   &QPushButton::clicked, this, &CalibrationOverlay::onTempBurn);
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    btnRow->addStretch(); btnRow->addWidget(burnBtn); btnRow->addSpacing(8); btnRow->addWidget(closeBtn2);
+    left->addLayout(btnRow);
+
+    body->addWidget(leftCol, 1);
+
+    // ── RIGHT COLUMN: 3D thermometer probe ───────────────────────────
+    QWidget *rightCol = new QWidget();
+    rightCol->setStyleSheet(QString(
+        "background:qradialgradient(cx:0.5,cy:0.4,radius:0.9,"
+        "stop:0 #15191F,stop:1 #0B0D11);"
+        "border:1px solid #1F242C; border-radius:8px;"));
+    rightCol->setMinimumWidth(240);
+
+    QVBoxLayout *right = new QVBoxLayout(rightCol);
+    right->setContentsMargins(12, 14, 12, 14);
+    right->setSpacing(8);
+
+    QLabel *vizTitle = new QLabel("TEMP  ·  LIVE VIEW");
+    vizTitle->setStyleSheet(QString(
+        "color:%1; font-family:%2; font-size:10px; letter-spacing:1.5px; background:transparent;")
+        .arg(CLR_LABEL, FONT_MONO));
+    right->addWidget(vizTitle);
+
+    m_tempVisual = new TempSensorWidget(rightCol);
+    m_tempVisual->setStyleSheet("background:transparent;");
+    m_tempVisual->setCltMode(true);   // default; flipped in showCalibration
+    right->addWidget(m_tempVisual, 1, Qt::AlignHCenter);
+
+    body->addWidget(rightCol, 0);
+    l->addLayout(body);
+
+    // Footer
+    QWidget *footer = new QWidget();
+    footer->setStyleSheet(QString("background:#13161A; border-top:1px solid %1;").arg(CLR_BORDER2));
+    footer->setFixedHeight(48);
+    QHBoxLayout *fh = new QHBoxLayout(footer);
+    fh->setContentsMargins(28, 0, 28, 0);
+    QLabel *stat = new QLabel("SENSOR  ·  CALIBRATION");
+    stat->setStyleSheet(QString("color:#3A4252; font-family:%1; font-size:10px; letter-spacing:1.4px; background:transparent;").arg(FONT_MONO));
+    fh->addWidget(stat); fh->addStretch();
+    l->addWidget(footer);
 
     m_stack->addWidget(m_tempPanel);
+}
+
+void CalibrationOverlay::buildDutyPanel() {
+    const QString CLR_BG_PANEL = "#12161A";
+    const QString CLR_INSET    = "#0B0E12";
+    const QString CLR_BORDER   = "#1E2228";
+    const QString CLR_BORDER2  = "#23272E";
+    const QString CLR_LABEL    = "#B0B5C0";
+    const QString CLR_CYAN     = "#22D3EE";
+    const QString FONT_SANS    = "'Inter', system-ui, sans-serif";
+    const QString FONT_MONO    = "'JetBrains Mono', monospace";
+
+    m_dutyPanel = new QWidget();
+    m_dutyPanel->setStyleSheet(QString("QWidget { background-color: %1; }").arg(CLR_BG_PANEL));
+
+    QVBoxLayout *l = new QVBoxLayout(m_dutyPanel);
+    l->setContentsMargins(0, 0, 0, 0);
+    l->setSpacing(0);
+
+    // Two-column layout
+    QHBoxLayout *body = new QHBoxLayout();
+    body->setContentsMargins(28, 8, 28, 8);
+    body->setSpacing(24);
+
+    // ── LEFT COLUMN: Information ─────────────────────────────────────────
+    QWidget *leftCol = new QWidget();
+    leftCol->setStyleSheet("background:transparent;");
+    QVBoxLayout *left = new QVBoxLayout(leftCol);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->setSpacing(14);
+
+    QLabel *infoIcon = new QLabel("ℹ️");
+    infoIcon->setStyleSheet("font-size: 24px; background: transparent;");
+    left->addWidget(infoIcon, 0, Qt::AlignLeft);
+
+    QLabel *infoDesc = new QLabel(
+        "Injector Duty Cycle represents the percentage of time "
+        "the fuel injector remains open during one engine cycle.\n\n"
+        "A duty cycle above 85% suggests the injectors are "
+        "near maximum capacity and may go static (staying open 100% of the time).\n\n"
+        "Adjust required fuel and injector dead-time in Fuel Settings."
+    );
+    infoDesc->setWordWrap(true);
+    infoDesc->setStyleSheet(QString(
+        "color:%1; font-family:%2; font-size:13px; line-height: 1.5; "
+        "background:transparent;")
+        .arg(CLR_LABEL, FONT_SANS));
+    left->addWidget(infoDesc);
+
+    // Live bar + label
+    QWidget *liveWrap = new QWidget(); liveWrap->setStyleSheet("background:transparent;");
+    QVBoxLayout *lv = new QVBoxLayout(liveWrap); lv->setContentsMargins(0,0,0,0); lv->setSpacing(6);
+    m_dutyLiveLbl = new QLabel("Duty: --- %");
+    m_dutyLiveLbl->setStyleSheet(QString(
+        "color:%1; font-family:%2; font-size:15px; font-weight:600; background:transparent;")
+        .arg(CLR_CYAN, FONT_MONO));
+    lv->addWidget(m_dutyLiveLbl);
+    m_dutyLiveBar = new QProgressBar();
+    m_dutyLiveBar->setRange(0, 100); m_dutyLiveBar->setValue(0);
+    m_dutyLiveBar->setTextVisible(false); m_dutyLiveBar->setFixedHeight(10);
+    m_dutyLiveBar->setStyleSheet(QString(
+        "QProgressBar { border:1px solid %1; background:%2; border-radius:5px; }"
+        "QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+        "stop:0 #3B82F6,stop:0.6 #0EA5E9,stop:0.85 #F59E0B,stop:1 #EF4444); border-radius:5px; }")
+        .arg(CLR_BORDER, CLR_INSET));
+    lv->addWidget(m_dutyLiveBar);
+    left->addWidget(liveWrap);
+    left->addStretch();
+
+    // Footer buttons
+    QPushButton *closeBtn2 = new QPushButton("Close");
+    closeBtn2->setCursor(Qt::PointingHandCursor);
+    closeBtn2->setStyleSheet(QString(
+        "QPushButton { background:transparent; color:%1; border:1px solid #2A3038; "
+        "border-radius:6px; padding:9px 20px; font-family:%2; font-size:13px; }")
+        .arg(CLR_LABEL, FONT_SANS));
+    connect(closeBtn2, &QPushButton::clicked, this, &CalibrationOverlay::closeOverlay);
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    btnRow->addStretch(); btnRow->addWidget(closeBtn2);
+    left->addLayout(btnRow);
+
+    body->addWidget(leftCol, 1);
+
+    // ── RIGHT COLUMN: 3D injector view ───────────────────────────────
+    QWidget *rightCol = new QWidget();
+    rightCol->setStyleSheet(QString(
+        "background:qradialgradient(cx:0.5,cy:0.4,radius:0.9,"
+        "stop:0 #15191F,stop:1 #0B0D11);"
+        "border:1px solid #1F242C; border-radius:8px;"));
+    rightCol->setMinimumWidth(280);
+
+    QVBoxLayout *right = new QVBoxLayout(rightCol);
+    right->setContentsMargins(12, 14, 12, 14);
+    right->setSpacing(8);
+
+    QLabel *vizTitle = new QLabel("INJECTOR  ·  LIVE VIEW");
+    vizTitle->setStyleSheet(QString(
+        "color:%1; font-family:%2; font-size:10px; letter-spacing:1.5px; background:transparent;")
+        .arg(CLR_LABEL, FONT_MONO));
+    right->addWidget(vizTitle);
+
+    m_dutyVisual = new InjectorVisualWidget(rightCol);
+    m_dutyVisual->setStyleSheet("background:transparent;");
+    right->addWidget(m_dutyVisual, 1, Qt::AlignHCenter);
+
+    body->addWidget(rightCol, 1);
+    l->addLayout(body);
+
+    // Footer
+    QWidget *footer = new QWidget();
+    footer->setStyleSheet(QString("background:#13161A; border-top:1px solid %1;").arg(CLR_BORDER2));
+    footer->setFixedHeight(48);
+    QHBoxLayout *fh = new QHBoxLayout(footer);
+    fh->setContentsMargins(28, 0, 28, 0);
+    QLabel *stat = new QLabel("STATUS  ·  INFORMATIONAL");
+    stat->setStyleSheet(QString("color:#3A4252; font-family:%1; font-size:10px; letter-spacing:1.4px; background:transparent;").arg(FONT_MONO));
+    fh->addWidget(stat); fh->addStretch();
+    l->addWidget(footer);
+
+    m_stack->addWidget(m_dutyPanel);
 }
 
 void CalibrationOverlay::showCalibration(const QString &title) {
@@ -569,18 +876,31 @@ void CalibrationOverlay::showCalibration(const QString &title) {
     m_currentTitle = title;
 
     if (title.contains("TPS", Qt::CaseInsensitive)) {
-        // The redesigned TPS modal needs a larger canvas (two columns + live view).
+        // Redesigned TPS modal needs a larger canvas
         m_panel->setFixedSize(920, 620);
         loadTpsFromSettings();
         m_stack->setCurrentWidget(m_tpsPanel);
     } else if (title.contains("MAP", Qt::CaseInsensitive)) {
-        m_panel->setFixedSize(500, 440);
+        // Redesigned MAP modal: two columns + 3D pressure dial
+        m_panel->setFixedSize(820, 520);
         loadMapFromSettings();
+        if (m_mapVisual) m_mapVisual->setKpa(0.0);
         m_stack->setCurrentWidget(m_mapPanel);
+    } else if (title.contains("Duty", Qt::CaseInsensitive)) {
+        // Redesigned Duty modal: two columns + 3D injector visual
+        m_panel->setFixedSize(780, 520);
+        if (m_dutyVisual) m_dutyVisual->setDuty(0.0);
+        m_stack->setCurrentWidget(m_dutyPanel);
     } else {
-        m_panel->setFixedSize(500, 440);
+        // Redesigned Temp modal: two columns + 3D thermometer probe
+        m_panel->setFixedSize(820, 580);
+        const bool isClt = title.contains("CLT", Qt::CaseInsensitive);
         loadTempFromSettings();
-        m_tempLiveLbl->setText(title.contains("IAT", Qt::CaseInsensitive) ? "IAT: --- C" : "CLT: --- C");
+        m_tempLiveLbl->setText(isClt ? "CLT: --- °C" : "IAT: --- °C");
+        if (m_tempVisual) {
+            m_tempVisual->setCltMode(isClt);
+            m_tempVisual->setTemp(20.0);
+        }
         m_stack->setCurrentWidget(m_tempPanel);
     }
 
@@ -677,13 +997,22 @@ void CalibrationOverlay::updateLiveData(const RealTimeData &data) {
         m_mapLiveBar->setValue(qBound(m_mapLiveBar->minimum(),
                                       static_cast<int>(kpa + 0.5),
                                       m_mapLiveBar->maximum()));
+        if (m_mapVisual) m_mapVisual->setKpa(kpa);
     } else if (m_stack->currentWidget() == m_tempPanel) {
         const bool isIat = m_currentTitle.contains("IAT", Qt::CaseInsensitive);
         const double tempC = isIat ? data.getIAT() : data.getCoolant();
-        m_tempLiveLbl->setText(QString("%1: %2 C").arg(isIat ? "IAT" : "CLT").arg(tempC, 0, 'f', 1));
+        m_tempLiveLbl->setText(QString("%1: %2 °C").arg(isIat ? "IAT" : "CLT").arg(tempC, 0, 'f', 1));
         m_tempLiveBar->setValue(qBound(m_tempLiveBar->minimum(),
                                        static_cast<int>(tempC + 0.5),
                                        m_tempLiveBar->maximum()));
+        if (m_tempVisual) m_tempVisual->setTemp(tempC);
+    } else if (m_stack->currentWidget() == m_dutyPanel) {
+        const double duty = data.getInjectorDuty();
+        m_dutyLiveLbl->setText(QString("Duty: %1 %").arg(duty, 0, 'f', 1));
+        m_dutyLiveBar->setValue(qBound(m_dutyLiveBar->minimum(),
+                                       static_cast<int>(duty + 0.5),
+                                       m_dutyLiveBar->maximum()));
+        if (m_dutyVisual) m_dutyVisual->setDuty(duty);
     }
 }
 
@@ -1072,7 +1401,9 @@ void DashboardWidget::setupUi() {
     m_rpmGauge->setRange(0, 8000);
     m_rpmGauge->setLabel("RPM");
     m_rpmGauge->setDangerThreshold(7000);
-    topLay->addWidget(m_rpmGauge, 0, Qt::AlignLeft);
+    topLay->addStretch(1);
+    topLay->addWidget(m_rpmGauge, 0, Qt::AlignCenter);
+    topLay->addStretch(1);
 
     QWidget *gridContainer = new QWidget(this);
     QGridLayout *gridLay = new QGridLayout(gridContainer);
@@ -1103,6 +1434,7 @@ void DashboardWidget::setupUi() {
     gridWrapperLay->addWidget(gridContainer);
     gridWrapperLay->addStretch();
     topLay->addWidget(gridWrapper, 0, Qt::AlignCenter);
+    topLay->addStretch(1);
 
     QWidget *panelsContainer = new QWidget(this);
     panelsContainer->setFixedWidth(160);
@@ -1155,7 +1487,8 @@ void DashboardWidget::setupUi() {
     panelsLay->addWidget(fuelPanel);
     panelsLay->addWidget(engPanel);
     panelsLay->addStretch();
-    topLay->addWidget(panelsContainer);
+    topLay->addWidget(panelsContainer, 0, Qt::AlignCenter);
+    topLay->addStretch(1);
 
     QWidget *rightGaugesPanel = new QWidget(this);
     QGridLayout *rGLay = new QGridLayout(rightGaugesPanel);
@@ -1177,11 +1510,11 @@ void DashboardWidget::setupUi() {
     setupGauge(m_iatGauge, "IAT C", 0, 100, 80);
     setupGauge(m_dutyGauge, "DUTY %", 0, 100, 85);
 
-    rGLay->addWidget(m_mapGauge, 0, 0);
-    rGLay->addWidget(m_tpsGauge, 0, 1);
-    rGLay->addWidget(m_dutyGauge, 0, 2);
-    rGLay->addWidget(m_cltGauge, 1, 0);
-    rGLay->addWidget(m_iatGauge, 1, 1);
+    rGLay->addWidget(m_mapGauge, 0, 0, 1, 2, Qt::AlignCenter);
+    rGLay->addWidget(m_tpsGauge, 0, 2, 1, 2, Qt::AlignCenter);
+    rGLay->addWidget(m_dutyGauge, 0, 4, 1, 2, Qt::AlignCenter);
+    rGLay->addWidget(m_cltGauge, 1, 1, 1, 2, Qt::AlignCenter);
+    rGLay->addWidget(m_iatGauge, 1, 3, 1, 2, Qt::AlignCenter);
 
     auto handleCalibClick = [this](const QString& title) {
         m_calOverlay->showCalibration(title);
@@ -1190,14 +1523,10 @@ void DashboardWidget::setupUi() {
     connect(m_tpsGauge, &TunerGauge::clicked, this, [=](){ handleCalibClick("TPS Calibration"); });
     connect(m_cltGauge, &TunerGauge::clicked, this, [=](){ handleCalibClick("Coolant Temp Calibration"); });
     connect(m_iatGauge, &TunerGauge::clicked, this, [=](){ handleCalibClick("Intake Air Temp Calibration"); });
-    connect(m_dutyGauge, &TunerGauge::clicked, this, [this](){
-        QMessageBox::information(this, "Injector Characteristics",
-            "Injector flow rate and dead-time are configured in the "
-            "Fuel Settings -> Required Fuel page.\n\n"
-            "The duty gauge is informational only.");
-    });
+    connect(m_dutyGauge, &TunerGauge::clicked, this, [=](){ handleCalibClick("Injector Duty %"); });
 
-    topLay->addWidget(rightGaugesPanel, 0, Qt::AlignRight);
+    topLay->addWidget(rightGaugesPanel, 0, Qt::AlignCenter);
+    topLay->addStretch(1);
     mainLayout->addWidget(topContainer);
 
     QWidget *graphsContainer = new QWidget(this);

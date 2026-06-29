@@ -52,51 +52,83 @@ LoggingWidget::~LoggingWidget() {}
 
 void LoggingWidget::setupUi() {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(24, 24, 24, 24);
+    mainLayout->setContentsMargins(32, 32, 32, 32);
     mainLayout->setSpacing(24);
 
-    QLabel *title = new QLabel("SESSION LOGGER", this);
-    title->setStyleSheet(QString("font-family: 'Inter'; font-size: 24px; font-weight: bold; color: %1;")
+    // Header Area
+    QWidget *headerWidget = new QWidget(this);
+    QVBoxLayout *headerLayout = new QVBoxLayout(headerWidget);
+    headerLayout->setContentsMargins(0, 0, 0, 8);
+    headerLayout->setSpacing(4);
+
+    QLabel *title = new QLabel("SESSION LOGGER", headerWidget);
+    title->setStyleSheet(QString("font-family: 'Inter'; font-size: 28px; font-weight: 900; letter-spacing: 1px; color: %1;")
                          .arg(TunerProColors::TEXT_PRIMARY));
-    mainLayout->addWidget(title);
+    
+    QLabel *subtitle = new QLabel("Record high-speed telemetry and engine parameters directly to disk", headerWidget);
+    subtitle->setStyleSheet(QString("font-family: 'Inter'; font-size: 14px; color: %1;")
+                            .arg(TunerProColors::TEXT_MUTED));
+                            
+    headerLayout->addWidget(title);
+    headerLayout->addWidget(subtitle);
+    mainLayout->addWidget(headerWidget);
 
     QGridLayout *grid = new QGridLayout();
     grid->setSpacing(24);
     
     // Helper to create cards
-    auto createCard = [](const QString &cardTitle) -> QFrame* {
+    auto createCard = []() -> QFrame* {
         QFrame *card = new QFrame();
-        card->setStyleSheet(QString("QFrame { background-color: %1; border-radius: 8px; border: 1px solid %2; }")
-                            .arg(TunerProColors::BG_ELEVATED).arg(TunerProColors::BORDER_SUBTLE));
+        card->setStyleSheet(QString(
+            "QFrame { "
+            "  background-color: #1A1A1F; "
+            "  border-radius: 12px; "
+            "  border: 1px solid #2A2A30; "
+            "}"));
         return card;
     };
     
-    auto createCardTitle = [](const QString &t) -> QLabel* {
+    auto createCardHeader = [](const QString &t) -> QWidget* {
+        QWidget *wrap = new QWidget();
+        wrap->setStyleSheet("background: transparent;");
+        QVBoxLayout *vl = new QVBoxLayout(wrap);
+        vl->setContentsMargins(0, 0, 0, 16);
+        vl->setSpacing(12);
+
         QLabel *lbl = new QLabel(t);
-        lbl->setStyleSheet(QString("font-family: 'Barlow Condensed'; font-size: 14px; font-weight: bold; color: %1;")
-                           .arg(TunerProColors::TEXT_MUTED));
-        return lbl;
+        lbl->setStyleSheet(QString("font-family: 'Inter'; font-size: 13px; font-weight: 800; letter-spacing: 1.5px; color: %1;")
+                           .arg(TunerProColors::TEXT_SECONDARY));
+        vl->addWidget(lbl);
+
+        QFrame *line = new QFrame();
+        line->setFrameShape(QFrame::HLine);
+        line->setStyleSheet("border: none; background-color: #2A2A30;");
+        line->setFixedHeight(1);
+        vl->addWidget(line);
+
+        return wrap;
     };
 
     // ----------------------------
     // Card 1: Control
     // ----------------------------
-    QFrame *cardControl = createCard("CONTROL");
+    QFrame *cardControl = createCard();
     QVBoxLayout *cL = new QVBoxLayout(cardControl);
-    cL->setContentsMargins(20, 20, 20, 20);
-    cL->addWidget(createCardTitle("CONTROL"));
+    cL->setContentsMargins(24, 24, 24, 24);
+    cL->addWidget(createCardHeader("CONTROL"));
     
     m_statusLabel = new QLabel("READY TO RECORD");
-    m_statusLabel->setStyleSheet(QString("font-family: 'JetBrains Mono'; font-size: 12px; color: %1;").arg(TunerProColors::TEXT_SECONDARY));
+    m_statusLabel->setStyleSheet(QString("font-family: 'JetBrains Mono'; font-size: 13px; font-weight: bold; color: %1;").arg(TunerProColors::TEXT_SECONDARY));
     cL->addWidget(m_statusLabel);
+    cL->addSpacing(8);
     
     m_toggleButton = new QPushButton("START LOGGING", this);
-    m_toggleButton->setFixedHeight(48);
+    m_toggleButton->setFixedHeight(56);
     m_toggleButton->setCursor(Qt::PointingHandCursor);
     m_toggleButton->setStyleSheet(QString(
-        "QPushButton { background-color: %1; color: %2; border: none; border-radius: 6px; font-family: 'Inter'; font-size: 14px; font-weight: bold; }"
-        "QPushButton:hover { background-color: %3; }"
-    ).arg(TunerProColors::DANGER).arg(TunerProColors::TEXT_PRIMARY).arg("#FF5A5F"));
+        "QPushButton { background-color: %1; color: %2; border: none; border-radius: 8px; font-family: 'Inter'; font-size: 16px; font-weight: 900; letter-spacing: 2px; }"
+        "QPushButton:hover { background-color: #FF5A5F; }"
+    ).arg(TunerProColors::DANGER).arg(TunerProColors::TEXT_PRIMARY));
     
     m_pulseEffect = new QGraphicsOpacityEffect(this);
     m_toggleButton->setGraphicsEffect(m_pulseEffect);
@@ -112,16 +144,17 @@ void LoggingWidget::setupUi() {
     });
     cL->addWidget(m_toggleButton);
     
-    cL->addSpacing(16);
+    cL->addSpacing(24);
     QLabel *bufLbl = new QLabel("Buffer Utilization", this);
-    bufLbl->setStyleSheet(QString("color: %1; font-size: 11px;").arg(TunerProColors::TEXT_MUTED));
+    bufLbl->setStyleSheet(QString("color: %1; font-size: 12px; font-weight: 600;").arg(TunerProColors::TEXT_MUTED));
     cL->addWidget(bufLbl);
     
     m_bufferBar = new BufferBar(this);
     cL->addWidget(m_bufferBar);
+    cL->addSpacing(8);
     
     m_fileLabel = new QLabel("Path: Documents/OSTuner/Logs", this);
-    m_fileLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(TunerProColors::TEXT_MUTED));
+    m_fileLabel->setStyleSheet(QString("font-family: 'JetBrains Mono'; color: %1; font-size: 11px;").arg(TunerProColors::TEXT_MUTED));
     cL->addWidget(m_fileLabel);
 
     grid->addWidget(cardControl, 0, 0);
@@ -129,27 +162,29 @@ void LoggingWidget::setupUi() {
     // ----------------------------
     // Card 2: Session Statistics
     // ----------------------------
-    QFrame *cardStats = createCard("STATISTICS");
+    QFrame *cardStats = createCard();
     QVBoxLayout *sL = new QVBoxLayout(cardStats);
-    sL->setContentsMargins(20, 20, 20, 20);
-    sL->addWidget(createCardTitle("STATISTICS"));
+    sL->setContentsMargins(24, 24, 24, 24);
+    sL->addWidget(createCardHeader("STATISTICS"));
     
-    QGridLayout *stGrid = new QGridLayout();
-    auto addStat = [this](QGridLayout *g, const QString &labelStr, int r, int c) -> QLabel* {
+    QHBoxLayout *stGrid = new QHBoxLayout();
+    stGrid->setSpacing(32);
+    auto addStat = [this](QHBoxLayout *g, const QString &labelStr) -> QLabel* {
         QVBoxLayout *v = new QVBoxLayout();
+        v->setSpacing(4);
         QLabel *lbl = new QLabel(labelStr);
-        lbl->setStyleSheet(QString("color: %1; font-size: 12px;").arg(TunerProColors::TEXT_SECONDARY));
+        lbl->setStyleSheet(QString("color: %1; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;").arg(TunerProColors::TEXT_MUTED));
         QLabel *val = new QLabel("0");
-        val->setStyleSheet(QString("font-family: 'JetBrains Mono'; font-size: 24px; font-weight: bold; color: %1;").arg(TunerProColors::TEXT_PRIMARY));
+        val->setStyleSheet(QString("font-family: 'JetBrains Mono'; font-size: 32px; font-weight: 900; color: #00BCD4;"));
         v->addWidget(lbl);
         v->addWidget(val);
-        g->addLayout(v, r, c);
+        g->addLayout(v);
         return val;
     };
     
-    m_recordCountLabel = addStat(stGrid, "Records Written", 0, 0);
-    m_fileSizeLabel = addStat(stGrid, "File Size", 0, 1);
-    m_rateLabel = addStat(stGrid, "Data Rate", 1, 0);
+    m_recordCountLabel = addStat(stGrid, "Records");
+    m_fileSizeLabel = addStat(stGrid, "File Size");
+    m_rateLabel = addStat(stGrid, "Data Rate");
     sL->addLayout(stGrid);
     sL->addStretch();
     
@@ -158,20 +193,28 @@ void LoggingWidget::setupUi() {
     // ----------------------------
     // Card 3: Logged Channels
     // ----------------------------
-    QFrame *cardChan = createCard("CHANNELS");
+    QFrame *cardChan = createCard();
     QVBoxLayout *chL = new QVBoxLayout(cardChan);
-    chL->setContentsMargins(20, 20, 20, 20);
-    chL->addWidget(createCardTitle("LOGGED CHANNELS (Standard + High-Speed)"));
+    chL->setContentsMargins(24, 24, 24, 24);
+    chL->addWidget(createCardHeader("LOGGED CHANNELS (Standard + High-Speed)"));
     
-    // Dummy Pills
     QWidget *pillWrap = new QWidget();
     QHBoxLayout *pL = new QHBoxLayout(pillWrap);
     pL->setContentsMargins(0,0,0,0);
-    pL->setSpacing(8);
+    pL->setSpacing(12);
     auto createPill = [](const QString &t) {
         QLabel *l = new QLabel(t);
-        l->setStyleSheet(QString("background-color: %1; color: %2; border-radius: 12px; padding: 4px 12px; font-size: 11px; font-weight: bold;")
-                         .arg(TunerProColors::BG_INTERACTIVE).arg(TunerProColors::TEXT_PRIMARY));
+        l->setAlignment(Qt::AlignCenter);
+        l->setStyleSheet(QString(
+            "background-color: #24242A; "
+            "color: %1; "
+            "border: 1px solid #33333C; "
+            "border-radius: 14px; "
+            "padding: 6px 18px; "
+            "font-size: 12px; "
+            "font-weight: 800; "
+            "letter-spacing: 0.5px;"
+        ).arg(TunerProColors::TEXT_PRIMARY));
         return l;
     };
     pL->addWidget(createPill("RPM"));
@@ -188,13 +231,28 @@ void LoggingWidget::setupUi() {
     // ----------------------------
     // Card 4: Recent Logs
     // ----------------------------
-    QFrame *cardLogs = createCard("RECENT LOGS");
+    QFrame *cardLogs = createCard();
     QVBoxLayout *rlL = new QVBoxLayout(cardLogs);
-    rlL->setContentsMargins(20, 20, 20, 20);
-    rlL->addWidget(createCardTitle("RECENT SESSIONS"));
+    rlL->setContentsMargins(24, 24, 24, 24);
+    rlL->addWidget(createCardHeader("RECENT SESSIONS"));
     m_recentLogsList = new QListWidget(this);
-    m_recentLogsList->setStyleSheet(QString("QListWidget { background: transparent; border: none; color: %1; }").arg(TunerProColors::TEXT_PRIMARY));
-    m_recentLogsList->addItem(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm_track_session.csv"));
+    m_recentLogsList->setStyleSheet(QString(
+        "QListWidget { background: transparent; border: none; outline: none; } "
+        "QListWidget::item { "
+        "  background-color: #202025; "
+        "  color: %1; "
+        "  border: 1px solid #2B2B32; "
+        "  border-radius: 8px; "
+        "  margin-bottom: 10px; "
+        "  padding: 14px 16px; "
+        "  font-family: 'JetBrains Mono'; "
+        "  font-size: 13px; "
+        "} "
+        "QListWidget::item:hover { background-color: #2A2A30; border-color: #3D3D48; }"
+        ).arg(TunerProColors::TEXT_PRIMARY));
+    
+    // Add dummy item with a nice file icon prefix if possible, or just raw text
+    m_recentLogsList->addItem("📄 " + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm_track_session.csv"));
     rlL->addWidget(m_recentLogsList);
     
     grid->addWidget(cardLogs, 1, 1);

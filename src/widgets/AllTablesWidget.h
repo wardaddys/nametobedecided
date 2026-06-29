@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSlider>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QWidget>
 
@@ -45,17 +46,15 @@ private slots:
   void onCopyTable();
   void onSmoothValues();
   void onInterpolate();
-  void onReset();
+
   void onAdjustSelected();
   void onCamProfileChanged(int index);
-  void onGridToggle();
-  void onLightToggle();
+  void onMainTabChanged(int index);
 
 private:
   void setupUi();
   void setupTableDropdown();
   void setup3DGraph();
-  QWidget *createRightControlPanel();
   void populateTable(const QString &tableName);
   void update3DGraph();
   void updateVtecVisibility();
@@ -63,7 +62,6 @@ private:
   // UI Components - Header
   QLabel *m_titleLabel;
   QLabel *m_subtitleLabel;
-  QLabel *m_liveTuningLabel;
 
   // VTEC Warning Banner
   QFrame *m_vtecWarningBanner;
@@ -94,23 +92,14 @@ private:
   // 3D Graph
   TunerMap3DWidget *m_graphContainer;
 
+  // View Layout Management
+  QWidget *m_tableTab;
+  QWidget *m_dummyTable;
+  QWidget *m_dummy3D;
+  QWidget *m_dummySplit;
+  QSplitter *m_splitter;
+
   // Right Panel Controls
-  QLabel *m_tableSizeLabel;
-  QPushButton *m_resetBtn;
-  QPushButton *m_gridBtn;
-  QPushButton *m_lightBtn;
-  QSlider *m_zoomSlider;
-  QComboBox *m_hondataCombo;
-
-  // VE Table Visualization
-  QFrame *m_veTableViz;
-  QLabel *m_mapIndicator;
-
-  // Axis selectors
-  QCheckBox *m_xAxisRpm;
-  QCheckBox *m_yAxisLoad;
-  QCheckBox *m_zAxisVe;
-
   // Adjust Selected
   QDoubleSpinBox *m_adjustValue;
   QPushButton *m_adjustAddBtn;

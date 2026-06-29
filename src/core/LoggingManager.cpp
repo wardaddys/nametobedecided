@@ -6,6 +6,7 @@
 #include "LoggingManager.h"
 #include <QDir>
 #include <QStandardPaths>
+#include <QCoreApplication>
 
 LoggingManager::LoggingManager(QObject *parent)
     : QObject(parent), m_isLogging(false), m_recordCount(0), m_startTime(0),
@@ -24,8 +25,19 @@ bool LoggingManager::startLogging(const QString &filePath) {
 
   m_logFile.setFileName(path);
   if (!m_logFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    emit errorOccurred("Failed to open file: " + m_logFile.errorString());
-    return false;
+    // If opening fails (often due to Windows Defender blocking Documents), fallback to app directory
+    QString fallbackDir = QCoreApplication::applicationDirPath() + "/Logs";
+    QDir dir(fallbackDir);
+    if (!dir.exists()) dir.mkpath(".");
+    
+    QString fallbackPath = dir.filePath("Log_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".csv");
+    m_logFile.setFileName(fallbackPath);
+    
+    if (!m_logFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        emit errorOccurred("Failed to open log file.\nOriginal: " + path + "\nFallback: " + fallbackPath + "\nError: " + m_logFile.errorString());
+        return false;
+    }
+    path = fallbackPath; // Update path so UI shows the actual used path
   }
 
   m_stream.setDevice(&m_logFile);
@@ -96,11 +108,18 @@ void LoggingManager::processData(const RealTimeData &data) {
 }
 
 QString LoggingManager::generateDefaultFilename() const {
-  QString docs =
-      QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
   QDir dir(docs + "/OSTuner/Logs");
-  if (!dir.exists())
-    dir.mkpath(".");
+  
+  // Try to create the directory in Documents
+  if (!dir.exists() && !dir.mkpath(".")) {
+    // Fallback to application directory if Documents is locked (e.g. OneDrive or Defender)
+    QString appPath = QCoreApplication::applicationDirPath();
+    dir = QDir(appPath + "/Logs");
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+  }
 
   return dir.filePath(
       "Log_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") +

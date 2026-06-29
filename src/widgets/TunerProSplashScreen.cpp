@@ -15,8 +15,6 @@ TunerProSplashScreen::TunerProSplashScreen(const QPixmap &pixmap)
       m_starAngle(0), m_loadWidth(0), m_msgIndex(0) {
       
     m_bgImage = QPixmap(":/Statup screen images/TunerStudio OS backgroung image.png");
-    m_logoImage = QPixmap(":/Statup screen images/TunerStudio OS logo.png");
-    m_welcomeImage = QPixmap(":/Statup screen images/TunerStudio OS welcome message .png");
 
     if (qApp && qApp->primaryScreen()) {
         // Let's use a nice 1280x720 fixed size for the splash screen for consistency
@@ -26,28 +24,10 @@ TunerProSplashScreen::TunerProSplashScreen(const QPixmap &pixmap)
         if (!m_bgImage.isNull()) {
             QPixmap scaledBg = m_bgImage.scaled(targetW, targetH, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
             
-            // The car engine is a cutout with a transparent background. 
-            // We must composite it over a very deep, dark cyberpunk lighting gradient
-            QPixmap composite(targetW, targetH);
-            QPainter p(&composite);
-            
-            p.fillRect(composite.rect(), QColor("#FFFFFF")); // Matching car hood white
-            
-            // Push car engine properly so it fills the bottom visually
-            int ox = (targetW - scaledBg.width()) / 2;
-            int oy = (targetH - scaledBg.height()) / 2 - 20; // Shifted up to touch the top ceiling
-            p.drawPixmap(ox, oy, scaledBg);
-            
-            // Render a soft neutral vignette to maintain depth without blue tint
-            QRadialGradient vign(targetW/2.0, targetH/2.0, targetW/1.1);
-            vign.setColorAt(0.0, QColor(255, 255, 255, 0)); 
-            vign.setColorAt(0.7, QColor(200, 205, 210, 120)); // Soft grey shadow
-            vign.setColorAt(1.0, QColor(160, 165, 170, 200)); // Darker grey edges
-            p.fillRect(composite.rect(), vign);
-            
-            p.end();
-            
-            m_bgImage = composite; // Save the composite as the real background
+            // Just crop the image to perfectly fit the target size without any color overlays
+            int cropX = std::max(0, (scaledBg.width() - targetW) / 2);
+            int cropY = std::max(0, (scaledBg.height() - targetH) / 2);
+            m_bgImage = scaledBg.copy(cropX, cropY, targetW, targetH);
             setPixmap(m_bgImage);  // This rectifies the physical QSplashScreen window mask
             resize(m_bgImage.size());
         } else {
@@ -157,13 +137,7 @@ void TunerProSplashScreen::paintEvent(QPaintEvent *) {
         painter.fillRect(rect(), QColor("#11151c"));
     }
 
-    // 2. Draw Welcome Message (Plaque) at Top Center
-    if (!m_welcomeImage.isNull()) {
-        int pw = w * 0.55; 
-        int ph = m_welcomeImage.height() * pw / m_welcomeImage.width();
-        painter.drawPixmap((w - pw) / 2, -110, pw, ph, m_welcomeImage); // Aggressively pulled to the absolute top ceiling
-    }
-
+    // 2. Welcome Message Removed per request
     // 3. Center Logo Badge Removed per request
 
     // 4. Draw Sci-Fi Cyberpunk Holographic Buttons Manually
@@ -249,107 +223,139 @@ void TunerProSplashScreen::paintEvent(QPaintEvent *) {
         drawSciFiBtn(btn3->x(), btn3->y(), QColor("#ff3333"), "EXIT", "Close TunerStudio OS", m_hoverBtn3, 3);
     }
 
-    // 5. DIAGNOSTIC GANTRY 2.0 - MASTERPIECE UI
-    int barW = w * 0.60; 
-    int barH = 38;
-    int barX = (w - barW) / 2;
-    int barY = h - 80; 
-    int lightCount = 5;
-    int lightSpacing = barW / (lightCount + 1);
-    int lightSize = 22;
+    // 5. 3D REALISTIC TRAFFIC LIGHTS (F1 STYLE GRID)
+    int numSignals = 5;
+    int sigW = 40;
+    int sigH = 65;
+    int gap = 25;
+    int totalW = (numSignals * sigW) + ((numSignals - 1) * gap);
+    int startX = (w - totalW) / 2;
+    int sigY = h - 90; // Position near the bottom
 
-    // A. PREMIUM POLISHED CARBON FIBER TUBE
-    QLinearGradient tubeGrad(0, barY, 0, barY + barH);
-    tubeGrad.setColorAt(0.0, QColor(40, 42, 45)); // Top highlight
-    tubeGrad.setColorAt(0.15, QColor(15, 16, 18)); // Body
-    tubeGrad.setColorAt(0.5, QColor(0, 0, 0));      // Depth shadow
-    tubeGrad.setColorAt(0.85, QColor(10, 11, 13)); // Body return
-    tubeGrad.setColorAt(1.0, QColor(45, 48, 52));  // Bottom bounce highlight
-    
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(tubeGrad);
-    painter.drawRoundedRect(barX, barY, barW, barH, 19, 19);
+    // A. Draw Mounting Rail behind the lights
+    QLinearGradient railGrad(0, sigY + 25, 0, sigY + 35);
+    railGrad.setColorAt(0.0, QColor(50, 50, 50));
+    railGrad.setColorAt(0.5, QColor(100, 100, 100)); // Specular highlight on metal tube
+    railGrad.setColorAt(1.0, QColor(20, 20, 20));
+    painter.setBrush(railGrad);
+    painter.setPen(QPen(QColor(10, 10, 10), 1));
+    painter.drawRoundedRect(startX - 30, sigY + 25, totalW + 60, 10, 4, 4);
 
-    // Realistic Carbon Fiber Weave (Checkerboard Pattern)
-    painter.setPen(QPen(QColor(255, 255, 255, 12), 1));
-    for(int i=0; i<barW; i+=6) {
-        for(int j=0; j<barH; j+=6) {
-            if((i+j)%4 == 0) painter.drawRect(barX + i, barY + j, 2, 2);
+    // Draw each individual 3D light housing
+    for (int i = 0; i < numSignals; i++) {
+        int x = startX + i * (sigW + gap);
+        int y = sigY;
+        
+        // 1. The housing (Matte Black 3D Box)
+        QPainterPath boxPath;
+        boxPath.addRoundedRect(x, y, sigW, sigH, 6, 6);
+        
+        QLinearGradient boxGrad(x, y, x + sigW, y); // Horizontal lighting
+        boxGrad.setColorAt(0.0, QColor(25, 25, 25));
+        boxGrad.setColorAt(0.2, QColor(55, 55, 55)); // Left highlight
+        boxGrad.setColorAt(0.7, QColor(15, 15, 15)); // Main body
+        boxGrad.setColorAt(1.0, QColor(5, 5, 5));    // Right shadow
+        painter.fillPath(boxPath, boxGrad);
+        
+        painter.setPen(QPen(QColor(0, 0, 0), 2));
+        painter.drawPath(boxPath);
+        
+        // 2. The Socket Base
+        int cx = x + sigW / 2;
+        int cy = y + sigH / 2 + 3; // Shifted down slightly
+        int r = 14;
+        
+        painter.setPen(Qt::NoPen);
+        QRadialGradient socketGrad(cx, cy, r + 4);
+        socketGrad.setColorAt(0.8, QColor(0, 0, 0));
+        socketGrad.setColorAt(1.0, QColor(70, 70, 70)); // Inner bevel reflection
+        painter.setBrush(socketGrad);
+        painter.drawEllipse(QPoint(cx, cy), r + 4, r + 4);
+
+        // Lens background (Unlit)
+        painter.setBrush(QColor(15, 5, 5));
+        painter.drawEllipse(QPoint(cx, cy), r, r);
+        
+        // LED dots texture
+        painter.setPen(QPen(QColor(0, 0, 0, 100), 1));
+        for(int dy = -r; dy <= r; dy += 3) {
+            for(int dx = -r; dx <= r; dx += 3) {
+                if(dx*dx + dy*dy < (r-2)*(r-2)) {
+                    painter.drawPoint(cx + dx, cy + dy);
+                }
+            }
         }
-    }
 
-    // B. INTEGRATED PROTECTION GLASS PANEL (Frosted Acrylic)
-    painter.setBrush(QColor(100, 200, 255, 10)); // Very faint blue tint
-    painter.setPen(QPen(QColor(255, 255, 255, 30), 1));
-    painter.drawRoundedRect(barX + 15, barY + 6, barW - 30, barH - 12, 10, 10);
-    
-    // Scanline Texture on Glass
-    painter.setPen(QPen(QColor(255, 255, 255, 20), 1));
-    for(int s=barY + 10; s < barY + barH - 10; s+=3) {
-        painter.drawLine(barX + 20, s, barX + barW - 20, s);
-    }
-
-    for(int i=0; i<lightCount; i++) {
-        int lx = barX + (i + 1) * lightSpacing;
-        int ly = barY + barH / 2;
-        
-        // C. HOLOGRAPHIC STAGE MARKERS
-        painter.setPen(QColor(150, 180, 200, 100));
-        painter.setFont(QFont("Consolas", 7));
-        painter.drawText(lx - 12, barY + 4, QString("S-0%1").arg(i+1));
-
-        // D. LIGHT MECHANICAL SOCKETS
-        painter.setBrush(QColor(0, 0, 0));
-        painter.setPen(QPen(QColor(100, 100, 100, 50), 1));
-        painter.drawEllipse(QPoint(lx, ly), lightSize/2 + 2, lightSize/2 + 2);
-        
-        // E. LIGHT LOGIC & FX
-        double threshold = (i + 1) * (100.0 / lightCount);
+        // Logic
+        double threshold = (i + 1) * (100.0 / numSignals);
         bool isLit = (m_loadWidth >= threshold);
         bool allGreen = (m_loadWidth >= 100);
 
         if (allGreen) {
-            // "LAUNCH READY" - High-End Plasma Bloom
-            QRadialGradient pGlow(lx, ly, 30);
-            pGlow.setColorAt(0.0, QColor(0, 255, 150, 230));
-            pGlow.setColorAt(0.7, QColor(0, 255, 150, 30));
-            pGlow.setColorAt(1.0, QColor(0, 255, 150, 0));
-            painter.setBrush(pGlow);
-            painter.drawEllipse(QPoint(lx, ly), 30, 30);
+            // GREEN LIGHT
+            QRadialGradient lensGlow(cx, cy, r);
+            lensGlow.setColorAt(0.0, QColor(200, 255, 200)); // White-hot core
+            lensGlow.setColorAt(0.4, QColor(0, 255, 60));    // Vibrant green
+            lensGlow.setColorAt(1.0, QColor(0, 120, 20));    // Dark edge
+            painter.setBrush(lensGlow);
+            painter.setPen(Qt::NoPen);
+            painter.drawEllipse(QPoint(cx, cy), r, r);
             
-            painter.setBrush(Qt::white);
-            painter.drawEllipse(QPoint(lx, ly), 4, 4); 
+            // Subtle external halo
+            QRadialGradient halo(cx, cy, r * 2.5);
+            halo.setColorAt(0.0, QColor(0, 255, 60, 80));
+            halo.setColorAt(1.0, QColor(0, 255, 60, 0));
+            painter.setBrush(halo);
+            painter.drawEllipse(QPoint(cx, cy), r * 2.5, r * 2.5);
+            
         } else if (isLit) {
-            // SEQUENTIAL POWER IGNITION
-            QRadialGradient rGlow(lx, ly, 25);
-            rGlow.setColorAt(0.0, QColor(255, 50, 0, 240));
-            rGlow.setColorAt(0.8, QColor(255, 50, 0, 40));
-            rGlow.setColorAt(1.0, QColor(255, 50, 0, 0));
-            painter.setBrush(rGlow);
-            painter.drawEllipse(QPoint(lx, ly), 25, 25);
+            // RED LIGHT
+            QRadialGradient lensGlow(cx, cy, r);
+            lensGlow.setColorAt(0.0, QColor(255, 200, 200)); // White-hot core
+            lensGlow.setColorAt(0.4, QColor(255, 30, 0));    // Vibrant red
+            lensGlow.setColorAt(1.0, QColor(120, 0, 0));     // Dark edge
+            painter.setBrush(lensGlow);
+            painter.setPen(Qt::NoPen);
+            painter.drawEllipse(QPoint(cx, cy), r, r);
             
-            painter.setBrush(Qt::white);
-            painter.drawEllipse(QPoint(lx, ly), 4, 4);
+            // Subtle external halo
+            QRadialGradient halo(cx, cy, r * 2.5);
+            halo.setColorAt(0.0, QColor(255, 30, 0, 90));
+            halo.setColorAt(1.0, QColor(255, 30, 0, 0));
+            painter.setBrush(halo);
+            painter.drawEllipse(QPoint(cx, cy), r * 2.5, r * 2.5);
+            
         } else {
-            // Ambient reflection in off state
-            painter.setPen(QPen(QColor(255, 255, 255, 20), 1));
-            painter.drawArc(lx - 6, ly - 6, 12, 12, 120 * 16, 60 * 16);
+            // UNLIT - Glass Reflection
+            QPainterPath reflection;
+            reflection.arcMoveTo(cx - r + 1, cy - r + 1, (r-1)*2, (r-1)*2, 45);
+            reflection.arcTo(cx - r + 1, cy - r + 1, (r-1)*2, (r-1)*2, 45, 90);
+            reflection.arcTo(cx - r + 3, cy - r + 5, (r-3)*2, (r-5)*2, 135, -90);
+            
+            QLinearGradient reflGrad(cx, cy - r, cx, cy);
+            reflGrad.setColorAt(0.0, QColor(255, 255, 255, 140));
+            reflGrad.setColorAt(1.0, QColor(255, 255, 255, 0));
+            painter.setBrush(reflGrad);
+            painter.setPen(Qt::NoPen);
+            painter.drawPath(reflection);
         }
-    }
 
-    // 6. ULTIMATE TELEMETRY HUD
-    QColor hudColor = (m_loadWidth >= 100) ? QColor(0, 255, 150) : QColor(255, 80, 50);
-    painter.setPen(hudColor);
-    painter.setFont(QFont("Consolas", 10, QFont::Bold));
-    QString mainText = (m_loadWidth >= 100) ? ">> CRITICAL_MISSION_INIT_SUCCESS :: LAunch_Ready" : 
-                                              QString(">> ANALYZING_SYSTEM_VALVES :: PHASE_0%1").arg(m_msgIndex + 1);
-    painter.drawText(QRect(0, barY + 48, w, 25), Qt::AlignCenter, mainText);
-    
-    // Sub-Frequency line
-    painter.setPen(QPen(hudColor.darker(150), 1));
-    painter.drawLine(barX + 50, barY + 70, barX + barW - 50, barY + 70);
-    painter.setFont(QFont("Consolas", 8));
-    painter.drawText(QRect(0, barY + 72, w, 15), Qt::AlignCenter, "F-SYNC: 104.2MHz // CORE_TEMP: 32C");
+        // 3. The Visor (3D Hood)
+        QPainterPath hood;
+        int vr = r + 4; // Visor radius outer
+        int vi = r + 2; // Visor radius inner
+        hood.arcMoveTo(cx - vr, cy - vr - 6, vr*2, vr*2 + 6, 180);
+        hood.arcTo(cx - vr, cy - vr - 6, vr*2, vr*2 + 6, 180, -180); // Outer curve
+        hood.arcTo(cx - vi, cy - vi, vi*2, vi*2, 0, 180);            // Inner curve
+        
+        QLinearGradient hoodGrad(cx, cy - vr - 6, cx, cy);
+        hoodGrad.setColorAt(0.0, QColor(70, 70, 70)); // Highlight on top rim
+        hoodGrad.setColorAt(0.4, QColor(25, 25, 25)); // Body
+        hoodGrad.setColorAt(1.0, QColor(5, 5, 5));    // Base shadow
+        painter.setBrush(hoodGrad);
+        painter.setPen(QPen(QColor(10, 10, 10), 1));
+        painter.drawPath(hood);
+    }
 }
 
 void TunerProSplashScreen::mousePressEvent(QMouseEvent *event) {

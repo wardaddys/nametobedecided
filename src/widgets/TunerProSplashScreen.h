@@ -47,8 +47,6 @@ private:
     bool m_hoverBtn3 = false;
     
     QPixmap m_bgImage;
-    QPixmap m_logoImage;
-    QPixmap m_welcomeImage;
 };
 
 #endif // TUNERPROSPLASHSCREEN_H

@@ -311,4 +311,22 @@ void ToothLoggerWidget::onToothDataReceived(const QByteArray &data) {
   
   m_toothCountLabel->setText(QString("Teeth: %1").arg(m_toothTimes.size()));
   m_gapVisualizer->setData(m_toothTimes);
+  
+  // Continuous polling: re-queue another tooth log request while capturing
+  if (m_capturing && m_serialManager && m_serialManager->isConnected()) {
+      SerialCommand cmd;
+      cmd.data = m_serialManager->m_protocol->createToothLogRequest();
+      cmd.type = CommandType::ToothLog;
+      cmd.expectedResponse = -1;
+      cmd.timeoutMs = ProtocolTiming::TIMEOUT_MS;
+      cmd.retryCount = 1;
+      
+      // Use QTimer::singleShot to break synchronous infinite recursion in Simulation mode
+      // and provide a realistic 50ms interval between requests
+      QTimer::singleShot(50, this, [this, cmd]() {
+          if (m_capturing && m_serialManager && m_serialManager->isConnected()) {
+              m_serialManager->queueCommand(cmd);
+          }
+      });
+  }
 }

@@ -832,6 +832,21 @@ void SerialManager::sendCommand(const QByteArray &command) {
             responsePayload = "Speeduino 2025.01 (Sim)";
             processResponse(responsePayload);
 
+        } else if (cmdType == SpeeduinoCommands::CMD_TOOTH_LOG) { // 'T'
+            responsePayload.append(static_cast<char>(SpeeduinoRC::RC_OK));
+            static int toothCounter = 0;
+            // Generate ~60 teeth (120 bytes) to simulate a 36-1 crank wheel
+            for (int i = 0; i < 60; ++i) {
+                uint16_t timeUs = 1500 + (rand() % 100 - 50); // normal tooth ~1.5ms
+                if ((toothCounter % 36) == 35) {
+                    timeUs = 3000 + (rand() % 200 - 100); // missing tooth ~3.0ms
+                }
+                responsePayload.append(static_cast<char>(timeUs & 0xFF));
+                responsePayload.append(static_cast<char>((timeUs >> 8) & 0xFF));
+                toothCounter++;
+            }
+            processResponse(responsePayload);
+
         } else if (cmdType == SpeeduinoCommands::CMD_READ_PAGE) { // 'p'
             if (command.size() >= 7) {
                 quint8 page = static_cast<quint8>(command[2]);
@@ -1155,6 +1170,131 @@ void SerialManager::sendHeartbeat() {
 void SerialManager::requestRealTimeData() {
     // Only poll if we are fully connected
     if (m_status != ConnectionStatus::Connected) {
+        if (m_isPolling) m_dataPollingTimer->start(m_pollingInterval);
+        return;
+    }
+
+    // =========================================================================
+    // SIMULATION FAST-PATH
+    // Directly populate and emit a RealTimeData struct with animated, realistic
+    // engine values. This bypasses byte-array parsing entirely, avoiding any
+    // RC-byte offset ambiguity that caused the "off the chart" values before.
+    //
+    // Conversion rules from ECUData.h:
+    //   iat/coolant : °C = raw − 40  →  raw = °C + 40
+    //   tps         : %  = raw × 0.5  →  raw = % × 2
+    //   o2 / afr    : AFR = raw × 0.1 →  raw = AFR × 10
+    //   battery10   : V  = raw × 0.1  →  raw = V × 10
+    //   advance     : signed int8, direct degrees
+    //   rpm / map   : direct uint16
+    //   pw1         : µs, direct uint16
+    //   vss         : km/h, direct uint16
+    // =========================================================================
+    if (m_isSimulation) {
+        static double simTime  = 0.0;
+        static uint8_t seclCnt = 0;
+        simTime += m_pollingInterval / 1000.0;
+
+        // --- Primary wave: slow sine sweep simulating an engine rev cycle ---
+        double wave = (sin(simTime * 0.3) + 1.0) * 0.5;   // 0.0 .. 1.0
+
+        // Add small random noise so the gauges feel alive, not robotic
+        auto jitter = [](double base, double range) -> double {
+            return base + (range * (static_cast<double>(rand()) / RAND_MAX - 0.5));
+        };
+
+        RealTimeData rt;
+
+        // Uptime counter
+        rt.secl = seclCnt++;
+
+        // Engine status: running, full sync
+        rt.engine  = 0x01;          // BIT_ENGINE_RUN
+        rt.status1 = 0x01;          // INJ1 active
+        rt.status2 = 0x80;          // full sync (bit 7)
+        rt.status3 = 0x40;          // nSquirts=2 in bits 5-7
+        rt.syncLossCounter = 0;
+
+        // RPM: idle ~850 → revving to ~4500 RPM
+        rt.rpm = static_cast<uint16_t>(qBound(800.0, jitter(850 + wave * 3600, 60), 7800.0));
+
+        // MAP: vacuum at idle (~35 kPa), increases under load (~145 kPa)
+        rt.map = static_cast<uint16_t>(qBound(20.0, jitter(35 + wave * 110, 5), 250.0));
+
+        // TPS: 0% idle → ~45% at peak   (raw = % × 2, so 45% = raw 90)
+        rt.tps = static_cast<uint8_t>(qBound(0.0, jitter(wave * 90, 4), 200.0));
+
+        // CLT: warm running engine 88°C  (raw = °C + 40 = 128)
+        rt.coolant = static_cast<uint8_t>(qBound(40.0, jitter(128, 2), 200.0));
+
+        // IAT: ambient ~32°C             (raw = °C + 40 = 72)
+        rt.iat = static_cast<uint8_t>(qBound(40.0, jitter(72, 2), 120.0));
+
+        // Battery: 13.8 V               (raw = V × 10 = 138)
+        rt.battery10 = static_cast<uint8_t>(qBound(110.0, jitter(138, 3), 160.0));
+
+        // AFR: stoich ~14.7 at idle, richer ~13.2 under load
+        //   raw = AFR × 10   →  14.7 = 147, 13.2 = 132
+        double afrPhys = 14.7 - wave * 1.5;
+        rt.o2   = static_cast<uint8_t>(qBound(100.0, jitter(afrPhys * 10.0, 5), 200.0));
+        rt.o2_2 = rt.o2;
+        rt.afrTarget = 147; // target stoich 14.7
+
+        // Ignition advance: 15° at idle → 28° at load  (signed int8, direct)
+        rt.advance  = static_cast<int8_t>(qBound(8.0, jitter(15 + wave * 13, 2), 45.0));
+        rt.advance1 = rt.advance;
+
+        // Corrections (all 100% = no correction in sim)
+        rt.batCorrection  = 100;
+        rt.egoCorrection  = 100;
+        rt.iatCorrection  = 100;
+        rt.wueCorrection  = 100;
+        rt.flexCorrection = 100;
+        rt.baroCorrection = 100;
+        rt.corrections    = 100;
+
+        // VE: 65-80% under varying load
+        rt.ve  = static_cast<uint8_t>(qBound(50.0, jitter(65 + wave * 15, 3), 120.0));
+        rt.ve1 = rt.ve;
+
+        // Injector PW1: 2.5–5.0 ms = 2500–5000 µs
+        rt.pw1 = static_cast<uint16_t>(qBound(500.0, jitter(2500 + wave * 2500, 100), 8000.0));
+
+        // Dwell: 3.0 ms = raw 30 (×0.1)
+        rt.dwell = 30;
+        rt.actualDwell = 3000;
+
+        // VSS: 0–100 km/h
+        rt.vss = static_cast<uint16_t>(qBound(0.0, jitter(wave * 100, 5), 200.0));
+
+        // Fuel and oil pressure
+        rt.fuelPressure = static_cast<uint8_t>(qBound(30.0, jitter(45, 3), 90.0));
+        rt.oilPressure  = static_cast<uint8_t>(qBound(20.0, jitter(40, 3), 90.0));
+
+        // Barometric pressure
+        rt.baro = 101;
+
+        // Fuel temp: 40°C = raw 80 (°C + 40)
+        rt.fuelTemp            = 80;
+        rt.fuelTempCorrection  = 100;
+
+        // Boost target: ~0 kPa (naturally aspirated sim)
+        rt.boostTarget = 0;
+        rt.boostDuty   = 0;
+
+        // Misc
+        rt.loopsPerSecond = 200;
+        rt.freeRAM        = 8000;
+        rt.idleLoad       = 30;
+        rt.CLIdleTarget   = 85;  // 850 RPM idle target (×10)
+        rt.gear           = 0;
+        rt.ethanolPct     = 0;
+
+        rt.timestamp = QDateTime::currentDateTime();
+
+        emit dataReceived(rt);
+
+        m_packetsSent++;
         if (m_isPolling) m_dataPollingTimer->start(m_pollingInterval);
         return;
     }

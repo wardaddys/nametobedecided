@@ -83,7 +83,9 @@ void TunerMap3DWidget::setAxisLabels(const QStringList& x, const QStringList& z)
     m_xLabels = x; m_zLabels = z; update();
 }
 
-// ── Projection ───────────────────────────────────────────────────────────────
+
+
+// ── Interaction ───────────────────────────────────────────────────────────────
 
 QPointF TunerMap3DWidget::project(float x, float y, float z) const {
     float az = qDegreesToRadians(m_azimuth);
@@ -92,7 +94,7 @@ QPointF TunerMap3DWidget::project(float x, float y, float z) const {
     float ry  =  y;
     float rz  = -x*qSin(az) + z*qCos(az);
     float ry2 =  ry*qCos(el) - rz*qSin(el);
-    float rz2 =  ry*qSin(el) + rz*qCos(el);
+    float rz2 = -(ry*qSin(el) + rz*qCos(el));
     float fl  = 600.f * m_zoom;
     float per = fl / (fl + rz2 + 60.f);
     float sc  = qMin(width(), height()) * 0.78f / 20.f;
@@ -104,7 +106,7 @@ float TunerMap3DWidget::depth(float x, float y, float z) const {
     float az = qDegreesToRadians(m_azimuth);
     float el = qDegreesToRadians(m_elevation);
     float rz  = -x*qSin(az) + z*qCos(az);
-    return y*qSin(el) + rz*qCos(el);   // camera-space Z
+    return -(y*qSin(el) + rz*qCos(el));   // camera-space Z (distance away from camera)
 }
 
 // ── Floor grid ───────────────────────────────────────────────────────────────
@@ -167,13 +169,13 @@ void TunerMap3DWidget::renderSurface(QPainter& p) {
             // BUG-2 FIX: correct edge vectors for face normal
             QVector3D a(x1-x0, y01-y00, 0.f);       // edge along X (Z constant)
             QVector3D b(0.f,   y10-y00, z1-z0);     // edge along Z (X constant)
-            QVector3D n = QVector3D::crossProduct(a, b).normalized();
+            QVector3D n = QVector3D::crossProduct(b, a).normalized();
             QVector3D L(0.4f, 1.f, 0.6f); L.normalize();
             float diff = qBound(0.4f, QVector3D::dotProduct(n,L)*0.6f+0.70f, 1.f);
 
             fill = QColor(qBound(0,int(fill.red()*diff),255),
                           qBound(0,int(fill.green()*diff),255),
-                          qBound(0,int(fill.blue()*diff),255), 225);
+                          qBound(0,int(fill.blue()*diff),255), 255);
 
             bool sel = (m_selRow>=0 && m_selCol>=0 &&
                         (row==m_selRow||row==m_selRow-1) &&
@@ -364,6 +366,11 @@ void TunerMap3DWidget::paintEvent(QPaintEvent*) {
     p.setPen(QColor("#3D5070"));
     p.setFont(QFont("JetBrains Mono",9));
     p.drawText(QPoint(12,18), m_smoothMode ? "● SMOOTH" : "○ FLAT");
+
+    // Draw subtle border around the widget
+    p.setPen(QPen(QColor("#333"), 1.0f));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
 }
 
 // ── Mouse events ──────────────────────────────────────────────────────────────

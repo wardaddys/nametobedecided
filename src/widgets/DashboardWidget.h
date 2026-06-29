@@ -16,6 +16,9 @@ class QComboBox;
 class QLineEdit;
 class SerialManager;
 class ThrottleBodyWidget;
+class MapSensorWidget;
+class TempSensorWidget;
+class InjectorVisualWidget;
 
 class QProgressBar;
 
@@ -43,6 +46,7 @@ private:
     void buildTpsPanel();
     void buildMapPanel();
     void buildTempPanel();
+    void buildDutyPanel();
     QByteArray generateThermistorTable(double biasResistor, double r1, double t1, double r2, double t2, double r3, double t3);
 
     // Loads min/max + sensor selection from the active ECU definition / settings.
@@ -89,6 +93,7 @@ private:
     QLineEdit *m_map5Edit;
     QLabel    *m_mapLiveKpaLbl;     ///< Live MAP kPa
     QProgressBar *m_mapLiveBar;     ///< Live bar (0..maxKpa)
+    MapSensorWidget *m_mapVisual = nullptr;  ///< 3D pressure dial
 
     // Temp Panel (CLT / IAT)
     QWidget *m_tempPanel;
@@ -102,6 +107,13 @@ private:
     QLineEdit *m_tempT3Edit;
     QLabel    *m_tempLiveLbl;       ///< Live temp C (CLT or IAT)
     QProgressBar *m_tempLiveBar;
+    TempSensorWidget *m_tempVisual = nullptr; ///< 3D thermometer probe
+
+    // Duty Panel
+    QWidget *m_dutyPanel = nullptr;
+    QLabel *m_dutyLiveLbl = nullptr;
+    QProgressBar *m_dutyLiveBar = nullptr;
+    InjectorVisualWidget *m_dutyVisual = nullptr;
 
     ECUSettingsManager *m_settingsManager = nullptr;
     SerialManager *m_serialManager = nullptr;

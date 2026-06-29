@@ -76,16 +76,84 @@ void DataGraph::resizeEvent(QResizeEvent *event) {
 }
 
 void DataGraph::drawBackground(QPainter &painter) {
-    // Gradient background
-    QLinearGradient gradient(0, 0, 0, height());
-    gradient.setColorAt(0, m_bgColor.darker(110));
-    gradient.setColorAt(1, m_bgColor);
+    QRect r = rect();
+    int bezelWidth = 10;
     
-    painter.fillRect(rect(), gradient);
+    // 1. Thick 3D Sloped Bezel
+    QPoint tl(0, 0), tr(width(), 0), bl(0, height()), br(width(), height());
+    QPoint itl(bezelWidth, bezelWidth);
+    QPoint itr(width() - bezelWidth, bezelWidth);
+    QPoint ibl(bezelWidth, height() - bezelWidth);
+    QPoint ibr(width() - bezelWidth, height() - bezelWidth);
     
-    // Border
-    painter.setPen(QPen(m_gridColor, 1));
-    painter.drawRect(rect().adjusted(0, 0, -1, -1));
+    painter.setPen(Qt::NoPen);
+    
+    // Top bezel (lit from above)
+    painter.setBrush(QColor(60, 65, 75));
+    painter.drawPolygon(QPolygon({tl, tr, itr, itl}));
+    
+    // Left bezel (ambient light)
+    painter.setBrush(QColor(40, 45, 55));
+    painter.drawPolygon(QPolygon({tl, itl, ibl, bl}));
+    
+    // Bottom bezel (shadowed)
+    painter.setBrush(QColor(10, 12, 16));
+    painter.drawPolygon(QPolygon({bl, ibl, ibr, br}));
+    
+    // Right bezel (shadowed)
+    painter.setBrush(QColor(15, 18, 22));
+    painter.drawPolygon(QPolygon({tr, br, ibr, itr}));
+    
+    // Outer highlight rim
+    painter.setPen(QPen(QColor(0, 0, 0), 1));
+    painter.drawRect(r.adjusted(0, 0, -1, -1));
+
+    // 2. The Recessed Screen Area
+    QRect screenRect(bezelWidth, bezelWidth, width() - 2 * bezelWidth, height() - 2 * bezelWidth);
+    
+    // CRT Radial Glow
+    QRadialGradient bgGlow(screenRect.center(), screenRect.width() / 1.5);
+    bgGlow.setColorAt(0, m_bgColor.lighter(130));
+    bgGlow.setColorAt(1, m_bgColor.darker(200));
+    painter.fillRect(screenRect, bgGlow);
+    
+    // Corner tube vignette (darkening edges)
+    QRadialGradient vignette(screenRect.center(), screenRect.width() / 1.1);
+    vignette.setColorAt(0.7, QColor(0, 0, 0, 0));
+    vignette.setColorAt(1.0, QColor(0, 0, 0, 220));
+    painter.fillRect(screenRect, vignette);
+    
+    // Scanlines
+    painter.setPen(QPen(QColor(0, 0, 0, 60), 1));
+    for (int y = screenRect.top(); y < screenRect.bottom(); y += 3) {
+        painter.drawLine(screenRect.left(), y, screenRect.right(), y);
+    }
+    
+    // Deep Inner Shadow from the bezel (Top)
+    QLinearGradient topShadow(0, screenRect.top(), 0, screenRect.top() + 15);
+    topShadow.setColorAt(0, QColor(0, 0, 0, 255));
+    topShadow.setColorAt(1, QColor(0, 0, 0, 0));
+    painter.fillRect(screenRect.left(), screenRect.top(), screenRect.width(), 15, topShadow);
+    
+    // Deep Inner Shadow from the bezel (Left)
+    QLinearGradient leftShadow(screenRect.left(), 0, screenRect.left() + 15, 0);
+    leftShadow.setColorAt(0, QColor(0, 0, 0, 255));
+    leftShadow.setColorAt(1, QColor(0, 0, 0, 0));
+    painter.fillRect(screenRect.left(), screenRect.top(), 15, screenRect.height(), leftShadow);
+    
+    // Dramatic Curved Glass Reflection
+    QPainterPath glass;
+    glass.moveTo(screenRect.topLeft());
+    glass.lineTo(screenRect.topRight());
+    glass.lineTo(screenRect.right(), screenRect.top() + screenRect.height() * 0.35);
+    glass.quadTo(screenRect.center().x(), screenRect.top() + screenRect.height() * 0.55, 
+                 screenRect.left(), screenRect.top() + screenRect.height() * 0.35);
+    glass.closeSubpath();
+    
+    QLinearGradient glassGlow(0, screenRect.top(), 0, screenRect.top() + screenRect.height() * 0.5);
+    glassGlow.setColorAt(0, QColor(255, 255, 255, 25));
+    glassGlow.setColorAt(1, QColor(255, 255, 255, 0));
+    painter.fillPath(glass, glassGlow);
 }
 
 void DataGraph::drawGrid(QPainter &painter) {
@@ -94,7 +162,10 @@ void DataGraph::drawGrid(QPainter &painter) {
     int left = m_padding;
     int top = m_padding;
     
-    painter.setPen(QPen(m_gridColor, 1, Qt::DotLine));
+    // Draw oscilloscope-style solid grid with low opacity matching the phosphor color
+    QColor gridColor = m_lineColor; 
+    gridColor.setAlpha(30);
+    painter.setPen(QPen(gridColor, 1, Qt::SolidLine));
     
     // Horizontal lines (5 divisions)
     for (int i = 0; i <= 4; ++i) {
@@ -107,6 +178,12 @@ void DataGraph::drawGrid(QPainter &painter) {
         int x = left + (graphWidth * i / 10);
         painter.drawLine(x, top, x, top + graphHeight);
     }
+    
+    // Center crosshairs slightly brighter
+    gridColor.setAlpha(60);
+    painter.setPen(QPen(gridColor, 1, Qt::SolidLine));
+    painter.drawLine(left, top + graphHeight / 2, left + graphWidth, top + graphHeight / 2);
+    painter.drawLine(left + graphWidth / 2, top, left + graphWidth / 2, top + graphHeight);
 }
 
 void DataGraph::drawData(QPainter &painter) {
@@ -202,8 +279,9 @@ void DataGraph::drawData(QPainter &painter) {
 }
 
 void DataGraph::drawLabels(QPainter &painter) {
-    painter.setPen(m_textColor);
-    painter.setFont(QFont("Segoe UI", 8));
+    // High contrast labels matching the graph's neon color
+    painter.setPen(m_lineColor.lighter(130));
+    painter.setFont(QFont("JetBrains Mono", 8, QFont::Bold));
     
     int bottom = height() - m_padding;
     int top = m_padding;
@@ -217,25 +295,29 @@ void DataGraph::drawLabels(QPainter &painter) {
         QString label = QString::number(value, 'f', 1);
         if (!m_unit.isEmpty()) label += " " + m_unit;
         
-        painter.drawText(5, y + 4, label);
+        painter.drawText(16, y + 4, label);
     }
     
     // Current value (large, right side)
     if (!m_data.isEmpty()) {
         double currentValue = m_data.last();
-        painter.setFont(QFont("Segoe UI", 14, QFont::Bold));
-        painter.setPen(m_lineColor);
+        painter.setFont(QFont("JetBrains Mono", 15, QFont::Bold));
         
+        // Draw glow for the text
+        painter.setPen(QColor(m_lineColor.red(), m_lineColor.green(), m_lineColor.blue(), 100));
         QString valueText = QString::number(currentValue, 'f', 1);
         if (!m_unit.isEmpty()) valueText += " " + m_unit;
-        
         int textWidth = painter.fontMetrics().horizontalAdvance(valueText);
+        painter.drawText(width() - textWidth - 10 + 1, top + 20 + 1, valueText);
+        
+        // Draw main text
+        painter.setPen(m_lineColor);
         painter.drawText(width() - textWidth - 10, top + 20, valueText);
     }
 }
 
 void DataGraph::drawTitle(QPainter &painter) {
-    painter.setPen(m_textColor);
-    painter.setFont(QFont("Segoe UI", 10, QFont::Bold));
-    painter.drawText(m_padding, 15, m_title);
+    painter.setPen(QColor(255, 255, 255, 230)); // High contrast bright white
+    painter.setFont(QFont("Inter", 11, QFont::ExtraBold));
+    painter.drawText(m_padding, 24, m_title);
 }

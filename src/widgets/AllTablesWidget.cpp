@@ -48,44 +48,148 @@ void AllTablesWidget::setupUi() {
   mainLayout->setSpacing(0);
   mainLayout->setContentsMargins(0, 0, 0, 0);
 
-  // === HEADER SECTION ===
-  QWidget *headerWidget = new QWidget(this);
-  headerWidget->setStyleSheet(
-      "background-color: #252525; border-bottom: 1px solid #333;");
-  headerWidget->setFixedHeight(80);
-  QHBoxLayout *headerLayout = new QHBoxLayout(headerWidget);
-  headerLayout->setContentsMargins(20, 10, 20, 10);
+  // === TOOLBAR (Combined Header & Toolbar) ===
+  QWidget *toolbarWidget = new QWidget(this);
+  toolbarWidget->setStyleSheet("background-color: #252525; border-bottom: 1px solid #333;");
+  toolbarWidget->setMinimumHeight(60);
+  QHBoxLayout *toolbarLayout = new QHBoxLayout(toolbarWidget);
+  toolbarLayout->setContentsMargins(20, 10, 20, 10);
 
   // Left side - Title
   QVBoxLayout *titleLayout = new QVBoxLayout();
   titleLayout->setSpacing(2);
 
   m_titleLabel = new QLabel("All Tuning Tables", this);
-  m_titleLabel->setStyleSheet("font-size: 18px; font-weight: bold; color: "
-                              "white; background: transparent;");
+  m_titleLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: white; background: transparent;");
 
-  m_subtitleLabel = new QLabel("Comprehensive table editor with conditional "
-                               "visibility • 20 tables active",
-                               this);
-  m_subtitleLabel->setStyleSheet(
-      "font-size: 11px; color: #AAA; background: transparent;");
+  m_subtitleLabel = new QLabel("Comprehensive table editor with conditional visibility", this);
+  m_subtitleLabel->setStyleSheet("font-size: 10px; color: #AAA; background: transparent;");
 
   titleLayout->addWidget(m_titleLabel);
   titleLayout->addWidget(m_subtitleLabel);
-  headerLayout->addLayout(titleLayout);
-  headerLayout->addStretch();
+  toolbarLayout->addLayout(titleLayout);
 
-  // Right side - Live Tuning Indicator
-  m_liveTuningLabel = new QLabel("● LIVE TUNING", this);
-  m_liveTuningLabel->setStyleSheet("background-color: rgba(76, 175, 80, 0.2); "
-                                   "color: #4CAF50; "
-                                   "font-weight: bold; "
-                                   "padding: 8px 16px; "
-                                   "border-radius: 4px; "
-                                   "font-size: 12px;");
-  headerLayout->addWidget(m_liveTuningLabel);
+  toolbarLayout->addSpacing(30);
 
-  mainLayout->addWidget(headerWidget);
+  m_tableSelector = new QComboBox(this);
+  m_tableSelector->setMinimumWidth(220);
+  m_tableSelector->setStyleSheet("QComboBox { "
+                                 "  background-color: #2B2B2B; "
+                                 "  border: 1px solid #444; "
+                                 "  border-radius: 4px; "
+                                 "  padding: 8px 12px; "
+                                 "  color: white; "
+                                 "  font-size: 12px; "
+                                 "} "
+                                 "QComboBox::drop-down { border: none; } "
+                                 "QComboBox::down-arrow { image: "
+                                 "url(:/icons/dropdown.png); width: 12px; } "
+                                 "QComboBox QAbstractItemView { "
+                                 "  background-color: #2B2B2B; "
+                                 "  color: white; "
+                                 "  selection-background-color: #00BCD4; "
+                                 "  selection-color: black; "
+                                 "  border: 1px solid #444; "
+                                 "}");
+
+  connect(m_tableSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, &AllTablesWidget::onTableSelectionChanged);
+
+  // Search Box
+  m_searchBox = new QLineEdit(this);
+  m_searchBox->setPlaceholderText("🔍 Search tables...");
+  m_searchBox->setMinimumWidth(180);
+  m_searchBox->setStyleSheet("QLineEdit { "
+                             "  background-color: #2B2B2B; "
+                             "  border: 1px solid #444; "
+                             "  border-radius: 4px; "
+                             "  padding: 8px 12px; "
+                             "  color: white; "
+                             "  font-size: 12px; "
+                             "}");
+  connect(m_searchBox, &QLineEdit::textChanged, this,
+          &AllTablesWidget::onSearchTextChanged);
+
+  toolbarLayout->addWidget(m_tableSelector);
+  toolbarLayout->addSpacing(15);
+  toolbarLayout->addWidget(m_searchBox);
+
+  // -- Moved from Right Panel --
+  toolbarLayout->addSpacing(20);
+
+  // Quick Actions
+  m_copyBtn = new QPushButton("📋 Copy", this);
+  m_copyBtn->setStyleSheet(
+      "QPushButton { background-color: #3B3B3B; color: white; border: none; "
+      "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
+      "QPushButton:hover { background-color: #444; }");
+  connect(m_copyBtn, &QPushButton::clicked, this, &AllTablesWidget::onCopyTable);
+
+  m_smoothBtn = new QPushButton("📊 Smooth", this);
+  m_smoothBtn->setStyleSheet(
+      "QPushButton { background-color: #3B3B3B; color: white; border: none; "
+      "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
+      "QPushButton:hover { background-color: #444; }");
+  connect(m_smoothBtn, &QPushButton::clicked, this, &AllTablesWidget::onSmoothValues);
+
+  toolbarLayout->addWidget(m_copyBtn);
+  toolbarLayout->addWidget(m_smoothBtn);
+
+  toolbarLayout->addSpacing(20);
+
+  // Adjust Selected
+  QLabel *adjustLabel = new QLabel("Adjust:", this);
+  adjustLabel->setStyleSheet("color: #AAA; font-size: 11px; font-weight: bold; background: transparent;");
+
+  m_adjustValue = new QDoubleSpinBox(this);
+  m_adjustValue->setRange(-50, 50);
+  m_adjustValue->setValue(0.5);
+  m_adjustValue->setSingleStep(0.1);
+  m_adjustValue->setStyleSheet(
+      "QDoubleSpinBox { background-color: #2B2B2B; border: 1px solid #444; "
+      "border-radius: 4px; padding: 4px; color: white; font-size: 12px; min-width: 50px; }");
+
+  m_adjustAddBtn = new QPushButton("+ Add", this);
+  m_adjustAddBtn->setStyleSheet(
+      "QPushButton { background-color: rgba(0, 188, 212, 0.2); color: #00BCD4; "
+      "border: 1px solid rgba(0, 188, 212, 0.3); border-radius: 4px; padding: "
+      "6px 10px; font-size: 11px; } "
+      "QPushButton:hover { background-color: rgba(0, 188, 212, 0.3); }");
+  connect(m_adjustAddBtn, &QPushButton::clicked, this, &AllTablesWidget::onAdjustSelected);
+
+  m_adjustSubBtn = new QPushButton("- Sub", this);
+  m_adjustSubBtn->setStyleSheet(
+      "QPushButton { background-color: rgba(244, 67, 54, 0.2); color: #F44336; "
+      "border: 1px solid rgba(244, 67, 54, 0.3); border-radius: 4px; padding: "
+      "6px 10px; font-size: 11px; } "
+      "QPushButton:hover { background-color: rgba(244, 67, 54, 0.3); }");
+  connect(m_adjustSubBtn, &QPushButton::clicked, this, &AllTablesWidget::onAdjustSelected);
+
+  toolbarLayout->addWidget(adjustLabel);
+  toolbarLayout->addWidget(m_adjustValue);
+  toolbarLayout->addWidget(m_adjustAddBtn);
+  toolbarLayout->addWidget(m_adjustSubBtn);
+
+  toolbarLayout->addSpacing(20);
+
+  // Interpolate Toggle
+  QLabel *interpLabel = new QLabel("Interpolate:", this);
+  interpLabel->setStyleSheet("color: white; font-size: 11px; font-weight: bold; background: transparent;");
+
+  m_interpolateBtn = new QPushButton(this);
+  m_interpolateBtn->setCheckable(true);
+  m_interpolateBtn->setFixedSize(40, 20);
+  m_interpolateBtn->setStyleSheet(
+      "QPushButton { background-color: #3B3B3B; border-radius: 10px; } "
+      "QPushButton:checked { background-color: #00BCD4; }");
+  connect(m_interpolateBtn, &QPushButton::clicked, this, &AllTablesWidget::onInterpolate);
+
+  toolbarLayout->addWidget(interpLabel);
+  toolbarLayout->addWidget(m_interpolateBtn);
+
+  toolbarLayout->addStretch();
+
+  mainLayout->addWidget(toolbarWidget);
 
   // === VTEC WARNING BANNER ===
   m_vtecWarningBanner = new QFrame(this);
@@ -121,59 +225,6 @@ void AllTablesWidget::setupUi() {
   vtecLayout->addStretch();
 
   mainLayout->addWidget(m_vtecWarningBanner);
-
-  // === TOOLBAR ===
-  QWidget *toolbarWidget = new QWidget(this);
-  toolbarWidget->setStyleSheet("background-color: #1E1E1E;");
-  toolbarWidget->setFixedHeight(50);
-  QHBoxLayout *toolbarLayout = new QHBoxLayout(toolbarWidget);
-  toolbarLayout->setContentsMargins(20, 10, 20, 10);
-
-  m_tableSelector = new QComboBox(this);
-  m_tableSelector->setMinimumWidth(280);
-  m_tableSelector->setStyleSheet("QComboBox { "
-                                 "  background-color: #2B2B2B; "
-                                 "  border: 1px solid #444; "
-                                 "  border-radius: 4px; "
-                                 "  padding: 8px 12px; "
-                                 "  color: white; "
-                                 "  font-size: 12px; "
-                                 "} "
-                                 "QComboBox::drop-down { border: none; } "
-                                 "QComboBox::down-arrow { image: "
-                                 "url(:/icons/dropdown.png); width: 12px; } "
-                                 "QComboBox QAbstractItemView { "
-                                 "  background-color: #2B2B2B; "
-                                 "  color: white; "
-                                 "  selection-background-color: #00BCD4; "
-                                 "  selection-color: black; "
-                                 "  border: 1px solid #444; "
-                                 "}");
-
-  connect(m_tableSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
-          this, &AllTablesWidget::onTableSelectionChanged);
-
-  // Search Box
-  m_searchBox = new QLineEdit(this);
-  m_searchBox->setPlaceholderText("🔍 Search tables...");
-  m_searchBox->setMinimumWidth(200);
-  m_searchBox->setStyleSheet("QLineEdit { "
-                             "  background-color: #2B2B2B; "
-                             "  border: 1px solid #444; "
-                             "  border-radius: 4px; "
-                             "  padding: 8px 12px; "
-                             "  color: white; "
-                             "  font-size: 12px; "
-                             "}");
-  connect(m_searchBox, &QLineEdit::textChanged, this,
-          &AllTablesWidget::onSearchTextChanged);
-
-  toolbarLayout->addWidget(m_tableSelector);
-  toolbarLayout->addSpacing(15);
-  toolbarLayout->addWidget(m_searchBox);
-  toolbarLayout->addStretch();
-
-  mainLayout->addWidget(toolbarWidget);
 
   // === CONTENT AREA ===
   QWidget *contentWidget = new QWidget(this);
@@ -218,25 +269,25 @@ void AllTablesWidget::setupUi() {
       "}");
 
   // ── TABLE TAB ─────────────────────────────────────────────────────────────
-  QWidget *tableTab = new QWidget();
-  tableTab->setStyleSheet("background-color: #252525;");
-  QVBoxLayout *topLayout = new QVBoxLayout(tableTab);
+  m_tableTab = new QWidget(this);
+  m_tableTab->setStyleSheet("background-color: #252525;");
+  QVBoxLayout *topLayout = new QVBoxLayout(m_tableTab);
   topLayout->setContentsMargins(15, 12, 15, 10);
   topLayout->setSpacing(8);
 
   // Table Info Header
-  QWidget *tableHeader = new QWidget(tableTab);
+  QWidget *tableHeader = new QWidget(m_tableTab);
   tableHeader->setStyleSheet("background: transparent;");
   QVBoxLayout *tableHeaderLayout = new QVBoxLayout(tableHeader);
   tableHeaderLayout->setContentsMargins(0, 0, 0, 0);
   tableHeaderLayout->setSpacing(2);
 
-  m_tableInfoLabel = new QLabel("VE Table (Volumetric Efficiency)", tableTab);
+  m_tableInfoLabel = new QLabel("VE Table (Volumetric Efficiency)", m_tableTab);
   m_tableInfoLabel->setStyleSheet(
       "font-weight: bold; color: white; font-size: 14px; background: transparent;");
 
   m_tableDescLabel = new QLabel(
-      "Primary fuel calibration table - defines engine breathing efficiency", tableTab);
+      "Primary fuel calibration table - defines engine breathing efficiency", m_tableTab);
   m_tableDescLabel->setStyleSheet(
       "color: #AAA; font-size: 11px; background: transparent;");
 
@@ -270,29 +321,35 @@ void AllTablesWidget::setupUi() {
   topLayout->addWidget(m_camProfileTabs);
 
   // Main Table Editor (non-VTEC mode)
-  m_tableEditor = new TableEditor(tableTab);
+  m_tableEditor = new TableEditor(m_tableTab);
   connect(m_tableEditor, &TableEditor::dataChanged, this,
           &AllTablesWidget::onTableDataChanged);
   m_tableEditor->setVisible(false);
   m_tableEditor->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   topLayout->addWidget(m_tableEditor);
 
-  m_colorLegendBar = new ColorLegendBar(tableTab);
+  m_colorLegendBar = new ColorLegendBar(m_tableTab);
   topLayout->addWidget(m_colorLegendBar);
 
   // ── 3D SURFACE TAB ────────────────────────────────────────────────────────
   setup3DGraph();
 
   // Assemble tabs
-  m_mainViewTabs->addTab(tableTab, "  Table");
-  m_mainViewTabs->addTab(m_graphContainer, "  3D Surface");
+  m_dummyTable = new QWidget(this);
+  m_dummy3D = new QWidget(this);
+  m_dummySplit = new QWidget(this);
+  m_splitter = nullptr;
+
+  m_mainViewTabs->addTab(m_dummyTable, "  Table");
+  m_mainViewTabs->addTab(m_dummy3D, "  3D Surface");
+  m_mainViewTabs->addTab(m_dummySplit, "  Split View");
+
+  connect(m_mainViewTabs, &QTabWidget::currentChanged, this, &AllTablesWidget::onMainTabChanged);
 
   contentLayout->addWidget(m_mainViewTabs, 1);
-
-  // Right side - Control Panel
-  QWidget *rightPanel = createRightControlPanel();
-  rightPanel->setMaximumWidth(220);
-  contentLayout->addWidget(rightPanel, 0);
+  
+  // Initialize view
+  onMainTabChanged(0);
 
   mainLayout->addWidget(contentWidget, 1);
 
@@ -319,251 +376,6 @@ void AllTablesWidget::onDefinitionsLoaded() {
   if (m_tableSelector->count() > 0) {
       onTableSelectionChanged(0);
   }
-}
-
-QWidget *AllTablesWidget::createRightControlPanel() {
-  QWidget *panel = new QWidget(this);
-  panel->setStyleSheet("background-color: #252525; border-radius: 8px;");
-  panel->setMinimumWidth(280);
-  panel->setMaximumWidth(350);
-
-  QVBoxLayout *layout = new QVBoxLayout(panel);
-  layout->setContentsMargins(15, 15, 15, 15);
-  layout->setSpacing(15);
-
-  // --- Table Size Row ---
-  QHBoxLayout *sizeRow = new QHBoxLayout();
-
-  QLabel *sizeLabel = new QLabel("Table Size:", this);
-  sizeLabel->setStyleSheet(
-      "color: #AAA; font-size: 11px; background: transparent;");
-
-  m_tableSizeLabel = new QLabel("12×17", this);
-  m_tableSizeLabel->setStyleSheet("color: white; font-weight: bold; font-size: "
-                                  "12px; background: transparent;");
-
-  sizeRow->addWidget(sizeLabel);
-  sizeRow->addWidget(m_tableSizeLabel);
-  sizeRow->addStretch();
-
-  // Control buttons
-  m_resetBtn = new QPushButton("⟲ Reset", this);
-  m_resetBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; color: #888; border: none; "
-      "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
-      "QPushButton:hover { background-color: #444; color: white; }");
-  connect(m_resetBtn, &QPushButton::clicked, this, &AllTablesWidget::onReset);
-
-  m_gridBtn = new QPushButton("⊞ Grid", this);
-  m_gridBtn->setStyleSheet(
-      "QPushButton { background-color: #00BCD4; color: white; border: none; "
-      "border-radius: 4px; padding: 6px 12px; font-size: 11px; font-weight: "
-      "bold; } "
-      "QPushButton:hover { background-color: #00ACC1; }");
-  connect(m_gridBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onGridToggle);
-
-  m_lightBtn = new QPushButton("☀ Light", this);
-  m_lightBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; color: #888; border: none; "
-      "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
-      "QPushButton:hover { background-color: #444; color: white; }");
-  connect(m_lightBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onLightToggle);
-
-  sizeRow->addWidget(m_resetBtn);
-  sizeRow->addWidget(m_gridBtn);
-  sizeRow->addWidget(m_lightBtn);
-
-  layout->addLayout(sizeRow);
-
-  // --- Zoom Slider ---
-  QHBoxLayout *zoomRow = new QHBoxLayout();
-  QLabel *zoomLabel = new QLabel("Zoom:", this);
-  zoomLabel->setStyleSheet(
-      "color: #AAA; font-size: 11px; background: transparent;");
-
-  m_zoomSlider = new QSlider(Qt::Horizontal, this);
-  m_zoomSlider->setRange(50, 200);
-  m_zoomSlider->setValue(100);
-  m_zoomSlider->setStyleSheet(
-      "QSlider::groove:horizontal { background: #3B3B3B; height: 4px; "
-      "border-radius: 2px; } "
-      "QSlider::handle:horizontal { background: #00BCD4; width: 14px; margin: "
-      "-5px 0; border-radius: 7px; }");
-
-  QLabel *zoomValue = new QLabel("100%", this);
-  zoomValue->setStyleSheet(
-      "color: white; font-size: 11px; background: transparent;");
-
-  zoomRow->addWidget(zoomLabel);
-  zoomRow->addWidget(m_zoomSlider, 1);
-  zoomRow->addWidget(zoomValue);
-
-  // Hondata dropdown
-  m_hondataCombo = new QComboBox(this);
-  m_hondataCombo->addItems({"Hondata", "FlashPro", "KTuner"});
-  m_hondataCombo->setStyleSheet(
-      "QComboBox { background-color: #3B3B3B; border: 1px solid #444; "
-      "border-radius: 4px; padding: 4px 8px; color: white; font-size: 11px; } "
-      "QComboBox QAbstractItemView { "
-      "  background-color: #2B2B2B; "
-      "  color: white; "
-      "  selection-background-color: #00BCD4; "
-      "  selection-color: black; "
-      "  border: 1px solid #444; "
-      "}");
-
-  zoomRow->addWidget(m_hondataCombo);
-  layout->addLayout(zoomRow);
-
-  // --- VE Table Visualization ---
-  m_veTableViz = new QFrame(this);
-  m_veTableViz->setStyleSheet(
-      "background-color: #1E1E1E; border: 1px solid #444; border-radius: 6px;");
-  m_veTableViz->setMinimumHeight(120);
-
-  QVBoxLayout *vizLayout = new QVBoxLayout(m_veTableViz);
-  vizLayout->setContentsMargins(10, 10, 10, 10);
-
-  QLabel *vizTitle = new QLabel("VE Table (Volumetric Efficiency)", this);
-  vizTitle->setStyleSheet("color: #00BCD4; font-weight: bold; font-size: 11px; "
-                          "background: transparent;");
-
-  QLabel *vizRange = new QLabel("Range: 40.0 - 95.0 %", this);
-  vizRange->setStyleSheet(
-      "color: #AAA; font-size: 10px; background: transparent;");
-
-  m_mapIndicator = new QLabel("MAP ↑", this);
-  m_mapIndicator->setStyleSheet(
-      "color: #BBB; font-size: 11px; background: transparent;");
-  m_mapIndicator->setAlignment(Qt::AlignRight);
-
-  vizLayout->addWidget(vizTitle);
-  vizLayout->addWidget(vizRange);
-  vizLayout->addStretch();
-  vizLayout->addWidget(m_mapIndicator);
-
-  layout->addWidget(m_veTableViz);
-
-  // --- Axis Selectors ---
-  QLabel *axisLabel = new QLabel("Axes:", this);
-  axisLabel->setStyleSheet("color: #AAA; font-size: 11px; background: "
-                           "transparent; margin-top: 5px;");
-  layout->addWidget(axisLabel);
-
-  QString checkStyle =
-      "QCheckBox { color: white; font-size: 11px; background: transparent; } "
-      "QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; "
-      "border: 1px solid #444; background: #2B2B2B; } "
-      "QCheckBox::indicator:checked { background: #00BCD4; border-color: "
-      "#00BCD4; }";
-
-  m_xAxisRpm = new QCheckBox("X: RPM (rpm)", this);
-  m_xAxisRpm->setChecked(true);
-  m_xAxisRpm->setStyleSheet(checkStyle);
-
-  m_yAxisLoad = new QCheckBox("Y: Load (MAP) (kPa)", this);
-  m_yAxisLoad->setChecked(true);
-  m_yAxisLoad->setStyleSheet(checkStyle);
-
-  m_zAxisVe = new QCheckBox("Z: VE (%)", this);
-  m_zAxisVe->setChecked(true);
-  m_zAxisVe->setStyleSheet(checkStyle);
-
-  layout->addWidget(m_xAxisRpm);
-  layout->addWidget(m_yAxisLoad);
-  layout->addWidget(m_zAxisVe);
-
-  // --- Adjust Selected ---
-  QLabel *adjustLabel = new QLabel("Adjust Selected:", this);
-  adjustLabel->setStyleSheet("color: #AAA; font-size: 11px; background: "
-                             "transparent; margin-top: 10px;");
-  layout->addWidget(adjustLabel);
-
-  QHBoxLayout *adjustRow = new QHBoxLayout();
-
-  m_adjustValue = new QDoubleSpinBox(this);
-  m_adjustValue->setRange(-50, 50);
-  m_adjustValue->setValue(0.5);
-  m_adjustValue->setSingleStep(0.1);
-  m_adjustValue->setStyleSheet(
-      "QDoubleSpinBox { background-color: #2B2B2B; border: 1px solid #444; "
-      "border-radius: 4px; padding: 6px; color: white; font-size: 12px; }");
-
-  m_adjustAddBtn = new QPushButton("+ Add", this);
-  m_adjustAddBtn->setStyleSheet(
-      "QPushButton { background-color: rgba(0, 188, 212, 0.2); color: #00BCD4; "
-      "border: 1px solid rgba(0, 188, 212, 0.3); border-radius: 4px; padding: "
-      "6px 12px; font-size: 11px; } "
-      "QPushButton:hover { background-color: rgba(0, 188, 212, 0.3); }");
-  connect(m_adjustAddBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onAdjustSelected);
-
-  m_adjustSubBtn = new QPushButton("- Subtract", this);
-  m_adjustSubBtn->setStyleSheet(
-      "QPushButton { background-color: rgba(244, 67, 54, 0.2); color: #F44336; "
-      "border: 1px solid rgba(244, 67, 54, 0.3); border-radius: 4px; padding: "
-      "6px 12px; font-size: 11px; } "
-      "QPushButton:hover { background-color: rgba(244, 67, 54, 0.3); }");
-  connect(m_adjustSubBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onAdjustSelected);
-
-  adjustRow->addWidget(m_adjustValue, 1);
-  adjustRow->addWidget(m_adjustAddBtn);
-  adjustRow->addWidget(m_adjustSubBtn);
-  layout->addLayout(adjustRow);
-
-  // --- Quick Actions ---
-  QLabel *actionsLabel = new QLabel("Quick Actions:", this);
-  actionsLabel->setStyleSheet("color: #AAA; font-size: 11px; background: "
-                              "transparent; margin-top: 10px;");
-  layout->addWidget(actionsLabel);
-
-  m_copyBtn = new QPushButton("📋 Copy Table", this);
-  m_copyBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; color: white; border: none; "
-      "border-radius: 4px; padding: 8px 12px; font-size: 11px; text-align: "
-      "left; } "
-      "QPushButton:hover { background-color: #444; }");
-  connect(m_copyBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onCopyTable);
-
-  m_smoothBtn = new QPushButton("📊 Smooth Values", this);
-  m_smoothBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; color: white; border: none; "
-      "border-radius: 4px; padding: 8px 12px; font-size: 11px; text-align: "
-      "left; } "
-      "QPushButton:hover { background-color: #444; }");
-  connect(m_smoothBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onSmoothValues);
-
-  layout->addWidget(m_copyBtn);
-  layout->addWidget(m_smoothBtn);
-
-  // Interpolate Toggle
-  QHBoxLayout *interpRow = new QHBoxLayout();
-  QLabel *interpLabel = new QLabel("Interpolate", this);
-  interpLabel->setStyleSheet(
-      "color: white; font-size: 11px; background: transparent;");
-
-  m_interpolateBtn = new QPushButton(this);
-  m_interpolateBtn->setCheckable(true);
-  m_interpolateBtn->setFixedSize(44, 24);
-  m_interpolateBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; border-radius: 12px; } "
-      "QPushButton:checked { background-color: #00BCD4; }");
-  connect(m_interpolateBtn, &QPushButton::clicked, this,
-          &AllTablesWidget::onInterpolate);
-
-  interpRow->addWidget(interpLabel);
-  interpRow->addStretch();
-  interpRow->addWidget(m_interpolateBtn);
-  layout->addLayout(interpRow);
-
-  layout->addStretch();
-
-  return panel;
 }
 
 void AllTablesWidget::setup3DGraph() {
@@ -776,13 +588,6 @@ void AllTablesWidget::onInterpolate() {
   }
 }
 
-void AllTablesWidget::onReset() { 
-  if (m_settingsManager) {
-      // Re-read from ECU if page map was available, for now reload local cache
-      Logger::info("Table reset — reloading display for " + m_currentTableName);
-  }
-  populateTable(m_currentTableName); 
-}
 
 void AllTablesWidget::onAdjustSelected() {
   QPushButton *btn = qobject_cast<QPushButton *>(sender());
@@ -802,35 +607,6 @@ void AllTablesWidget::onCamProfileChanged(int index) {
   update3DGraph();
 }
 
-void AllTablesWidget::onGridToggle() {
-  m_gridMode = !m_gridMode;
-  m_gridBtn->setStyleSheet(
-      m_gridMode
-          ? "QPushButton { background-color: #00BCD4; color: white; border: "
-            "none; "
-            "border-radius: 4px; padding: 6px 12px; font-size: 11px; "
-            "font-weight: bold; } "
-            "QPushButton:hover { background-color: #00ACC1; }"
-          : "QPushButton { background-color: #3B3B3B; color: #888; border: "
-            "none; "
-            "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
-            "QPushButton:hover { background-color: #444; color: white; }");
-}
-
-void AllTablesWidget::onLightToggle() {
-  m_lightMode = !m_lightMode;
-  m_lightBtn->setStyleSheet(
-      m_lightMode
-          ? "QPushButton { background-color: #FFC107; color: black; border: "
-            "none; "
-            "border-radius: 4px; padding: 6px 12px; font-size: 11px; "
-            "font-weight: bold; } "
-            "QPushButton:hover { background-color: #FFD54F; }"
-          : "QPushButton { background-color: #3B3B3B; color: #888; border: "
-            "none; "
-            "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
-            "QPushButton:hover { background-color: #444; color: white; }");
-}
 
 void AllTablesWidget::setVtecEnabled(bool enabled) {
   m_vtecEnabled = enabled;
@@ -840,16 +616,7 @@ void AllTablesWidget::setVtecEnabled(bool enabled) {
 
 void AllTablesWidget::setLiveTuningEnabled(bool enabled) {
   m_liveTuningActive = enabled;
-  m_liveTuningLabel->setVisible(enabled);
-  if (enabled) {
-    m_liveTuningLabel->setStyleSheet(
-        "background-color: rgba(76, 175, 80, 0.2); "
-        "color: #4CAF50; "
-        "font-weight: bold; "
-        "padding: 8px 16px; "
-        "border-radius: 4px; "
-        "font-size: 12px;");
-  }
+  // Live tuning label was removed to save space
 }
 
 void AllTablesWidget::updateVtecVisibility() {
@@ -875,3 +642,56 @@ void AllTablesWidget::setSerialManager(SerialManager *serial) {
     // Initialize default table once we have serial manager
     populateTable("VE Table (Volumetric Efficiency)");
 }
+
+void AllTablesWidget::onMainTabChanged(int index) {
+  if (index == 0) {
+    // Table Only
+    if (!m_dummyTable->layout()) {
+      QVBoxLayout *l = new QVBoxLayout(m_dummyTable);
+      l->setContentsMargins(0, 0, 0, 0);
+    }
+    m_dummyTable->layout()->addWidget(m_tableTab);
+    m_tableTab->show();
+    m_graphContainer->hide();
+    m_graphContainer->setParent(this);
+  } else if (index == 1) {
+    // 3D Surface Only
+    if (!m_dummy3D->layout()) {
+      QVBoxLayout *l = new QVBoxLayout(m_dummy3D);
+      l->setContentsMargins(0, 0, 0, 0);
+    }
+    m_dummy3D->layout()->addWidget(m_graphContainer);
+    m_graphContainer->show();
+    m_tableTab->hide();
+    m_tableTab->setParent(this);
+  } else if (index == 2) {
+    // Split View
+    if (!m_dummySplit->layout()) {
+      QHBoxLayout *l = new QHBoxLayout(m_dummySplit);
+      l->setContentsMargins(10, 10, 10, 10);
+      l->setSpacing(10); // Spacing between items inside the layout (if any, but splitter handles its own)
+      
+      m_splitter = new QSplitter(Qt::Horizontal, m_dummySplit);
+      m_splitter->setHandleWidth(8);
+      m_splitter->setStyleSheet(
+          "QSplitter::handle { "
+          "  background-color: #3A3A3A; "
+          "  margin: 15px 2px; "
+          "  border-radius: 3px; "
+          "} "
+          "QSplitter::handle:hover { "
+          "  background-color: #00BCD4; "
+          "} "
+          "QSplitter::handle:pressed { "
+          "  background-color: #008BA3; "
+          "}");
+      l->addWidget(m_splitter);
+    }
+    m_splitter->addWidget(m_tableTab);
+    m_splitter->addWidget(m_graphContainer);
+    m_tableTab->show();
+    m_graphContainer->show();
+    m_splitter->setSizes(QList<int>() << 650 << 350); // Balanced default sizes
+  }
+}
+

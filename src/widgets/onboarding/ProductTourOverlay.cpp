@@ -192,7 +192,7 @@ void ProductTourOverlay::positionTooltip() {
     }
 
     // Get anchor rect in our coordinate space
-    QPoint anchorTopLeft = anchor->mapTo(this, QPoint(0, 0));
+    QPoint anchorTopLeft = this->mapFromGlobal(anchor->mapToGlobal(QPoint(0, 0)));
     QRect anchorRect(anchorTopLeft, anchor->size());
     int pad = step.padding;
 
@@ -234,7 +234,7 @@ void ProductTourOverlay::paintEvent(QPaintEvent *) {
         QWidget *anchor = step.anchorWidget;
 
         if (anchor && anchor->isVisible()) {
-            QPoint anchorTopLeft = anchor->mapTo(this, QPoint(0, 0));
+            QPoint anchorTopLeft = this->mapFromGlobal(anchor->mapToGlobal(QPoint(0, 0)));
             QRect anchorRect(anchorTopLeft, anchor->size());
             int pad = step.padding;
             QRect highlightRect = anchorRect.adjusted(-pad, -pad, pad, pad);

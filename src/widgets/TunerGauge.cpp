@@ -66,19 +66,58 @@ void TunerGauge::paintEvent(QPaintEvent *) {
     int cw = w / 2;
     int ch = h / 2;
     
-    // Background glow
-    QRadialGradient glow(cw, ch, size/2);
-    glow.setColorAt(0, QColor(0, 229, 200, 10)); // 0.04 alpha ~ 10/255
+    // Dynamic Background glow based on value
+    QRadialGradient glow(0, 0, size/2);
+    QColor glowColor = QColor(0, 229, 200, 15); // Default Teal
+    if (m_visualValue >= m_dangerThreshold) {
+        glowColor = QColor(255, 34, 0, 30); // Red pulse
+    } else if (m_visualValue >= m_max * 0.75) {
+        glowColor = QColor(255, 184, 0, 20); // Amber warning
+    }
+    glow.setColorAt(0, glowColor);
     glow.setColorAt(1, Qt::transparent);
-    painter.fillRect(rect(), glow);
-
-    painter.translate(cw, ch);
-
-    double r = (size / 2.0) * 0.8;
     
-    // Outer ring
-    painter.setPen(QPen(QColor("#1A2640"), 8));
-    painter.drawArc(QRectF(-r, -r, 2*r, 2*r), 0, 360 * 16);
+    painter.translate(cw, ch);
+    painter.fillRect(QRect(-cw, -ch, w, h), glow);
+    
+    double r = (size / 2.0) * 0.62;
+
+    // Skeuomorphic Gauge Face
+    // 1. Strong drop shadow for the housing
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 200));
+    painter.drawEllipse(QPointF(4, 6), r + 10, r + 10);
+
+    // 2. Gunmetal / Chrome Outer Bezel
+    QConicalGradient bezelGrad(0, 0, 45);
+    bezelGrad.setColorAt(0.0, QColor(140, 145, 150));
+    bezelGrad.setColorAt(0.25, QColor(40, 45, 50));
+    bezelGrad.setColorAt(0.5, QColor(160, 165, 170));
+    bezelGrad.setColorAt(0.75, QColor(30, 35, 40));
+    bezelGrad.setColorAt(1.0, QColor(140, 145, 150));
+    painter.setBrush(bezelGrad);
+    painter.drawEllipse(QPointF(0, 0), r + 10, r + 10);
+
+    // Inner rim reflection (deep shadow to light)
+    QLinearGradient innerRim(-r, -r, r, r);
+    innerRim.setColorAt(0.0, QColor(10, 10, 10)); 
+    innerRim.setColorAt(1.0, QColor(120, 125, 130)); 
+    painter.setBrush(innerRim);
+    painter.drawEllipse(QPointF(0, 0), r + 4, r + 4);
+
+    // 3. Dark Textured Dial Face (slightly convex look)
+    QRadialGradient faceGrad(0, 0, r);
+    faceGrad.setColorAt(0.0, QColor(45, 48, 55));
+    faceGrad.setColorAt(0.8, QColor(20, 22, 25));
+    faceGrad.setColorAt(1.0, QColor(10, 12, 15));
+    painter.setBrush(faceGrad);
+    painter.drawEllipse(QPointF(0, 0), r, r);
+    
+    // Inset shadow (inner edge)
+    QPen insetPen(QColor(0, 0, 0, 255), 3);
+    painter.setPen(insetPen);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(QPointF(0, 0), r, r);
 
     double startAngle = 225.0; 
     double sweep = 270.0;
@@ -131,12 +170,19 @@ void TunerGauge::paintEvent(QPaintEvent *) {
                          QPointF(tickR2 * cos(aRad), -tickR2 * sin(aRad)));
                          
         if (major) {
-            double txtR = r + 15;
+            double txtR = r + size * 0.10;
             double val = m_min + tRatio * (m_max - m_min);
-            painter.setFont(QFont("JetBrains Mono", tickFontSize));
+            painter.setFont(QFont("JetBrains Mono", tickFontSize, QFont::Bold));
             
             QPointF p(txtR * cos(aRad), -txtR * sin(aRad));
             QRectF txtRect(p.x()-20, p.y()-10, 40, 20);
+            
+            // Draw cyan glow shadow
+            painter.setPen(QColor(0, 229, 200, 70));
+            painter.drawText(txtRect.translated(1, 1), Qt::AlignCenter, QString::number(val, 'f', 0));
+            
+            // Draw main crisp white text
+            painter.setPen(QColor(245, 250, 255));
             painter.drawText(txtRect, Qt::AlignCenter, QString::number(val, 'f', 0));
         }
     }
@@ -149,21 +195,97 @@ void TunerGauge::paintEvent(QPaintEvent *) {
     painter.drawLine(QPointF((r-4)*cos(peakRad), -(r-4)*sin(peakRad)),
                      QPointF((r+4)*cos(peakRad), -(r+4)*sin(peakRad)));
 
-    // Floating Needle (Sexy modern style, does not cross text)
+    // Dynamic Sweeping Trail & Needle
     painter.save();
-    painter.rotate(-startAngle + sweep * valRatio + 90);
+    double currentAngle = -startAngle + sweep * valRatio;
     
-    QPainterPath np;
-    np.moveTo(-3, -(r * 0.65));
-    np.lineTo(3, -(r * 0.65));
-    np.lineTo(1, -(r * 0.85));
-    np.lineTo(-1, -(r * 0.85));
-    np.closeSubpath();
+    // Glowing trail behind the needle
+    if (valSweep > 0) {
+        QConicalGradient trailGrad(0, 0, currentAngle + 90);
+        QColor trailHead = (m_visualValue >= m_dangerThreshold) ? QColor(255, 34, 0, 180) : QColor(0, 229, 200, 180);
+        trailGrad.setColorAt(0.0, trailHead);
+        trailGrad.setColorAt(0.15, Qt::transparent); // Fades out quickly behind
+        trailGrad.setColorAt(1.0, trailHead); // Wrap around safe
+        
+        QPen trailPen(trailGrad, 12);
+        trailPen.setCapStyle(Qt::FlatCap);
+        painter.setPen(trailPen);
+        painter.drawArc(QRectF(-r+4, -r+4, 2*(r-4), 2*(r-4)), int(startAngle * 16), int(-valSweep * 16));
+    }
     
-    painter.translate(1, 1);
-    painter.fillPath(np, QColor(0,0,0,96)); // Drop shadow
-    painter.translate(-1, -1);
-    painter.fillPath(np, QColor("#EEF2FF"));
+    // The actual needle
+    painter.rotate(currentAngle + 90);
+    
+    // Strong Needle Drop Shadow
+    QPainterPath shadowPath;
+    shadowPath.moveTo(-2 + 4, -(r * 0.20) + 6);
+    shadowPath.lineTo(2 + 4, -(r * 0.20) + 6);
+    shadowPath.lineTo(1 + 4, -(r * 0.85) + 6);
+    shadowPath.lineTo(-1 + 4, -(r * 0.85) + 6);
+    shadowPath.closeSubpath();
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 140));
+    painter.drawPath(shadowPath);
+    
+    // 3D Faceted Needle (Two halves for light/shadow)
+    QPainterPath npLight;
+    npLight.moveTo(-4, -(r * 0.15));
+    npLight.lineTo(0, -(r * 0.15));
+    npLight.lineTo(0, -(r * 0.90));
+    npLight.lineTo(-1, -(r * 0.90));
+    npLight.closeSubpath();
+    
+    QPainterPath npDark;
+    npDark.moveTo(0, -(r * 0.15));
+    npDark.lineTo(4, -(r * 0.15));
+    npDark.lineTo(1, -(r * 0.90));
+    npDark.lineTo(0, -(r * 0.90));
+    npDark.closeSubpath();
+    
+    QColor baseColor = (m_visualValue >= m_dangerThreshold) ? QColor(255, 30, 30) : QColor(255, 70, 0);
+    
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(baseColor.lighter(130)); // Lit side
+    painter.drawPath(npLight);
+    painter.setBrush(baseColor.darker(150));  // Shadow side
+    painter.drawPath(npDark);
+    
+    // Skeuomorphic Metallic Center Cap (Spun metal)
+    double capR = r * 0.18;
+    // Drop shadow
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 180));
+    painter.drawEllipse(QPointF(2, 3), capR, capR);
+    
+    // Cap body
+    QConicalGradient capGrad(0, 0, 135);
+    capGrad.setColorAt(0.0, QColor(120, 125, 130));
+    capGrad.setColorAt(0.25, QColor(40, 45, 50));
+    capGrad.setColorAt(0.5, QColor(140, 145, 150));
+    capGrad.setColorAt(0.75, QColor(30, 35, 40));
+    capGrad.setColorAt(1.0, QColor(120, 125, 130));
+    painter.setBrush(capGrad);
+    painter.setPen(QPen(QColor(15, 15, 15), 1));
+    painter.drawEllipse(QPointF(0, 0), capR, capR);
+    
+    // Cap indent/detail
+    QLinearGradient indentGrad(-capR*0.5, -capR*0.5, capR*0.5, capR*0.5);
+    indentGrad.setColorAt(0, QColor(20, 20, 20));
+    indentGrad.setColorAt(1, QColor(80, 80, 80));
+    painter.setBrush(indentGrad);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(QPointF(0, 0), capR*0.5, capR*0.5);
+
+    // Glassmorphic Inner Cover (Specular Highlight)
+    QRadialGradient glassHighlight(0, -r*0.6, r*1.1);
+    glassHighlight.setColorAt(0, QColor(255, 255, 255, 40)); // Stronger white highlight
+    glassHighlight.setColorAt(0.4, QColor(255, 255, 255, 5));
+    glassHighlight.setColorAt(1, Qt::transparent);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(glassHighlight);
+    painter.drawEllipse(QPointF(0, 0), r, r);
+
+    
     painter.restore();
 
     // Readout (Drawn last to ensure it is crisp and clear in the center)

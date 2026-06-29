@@ -51,7 +51,10 @@ set(SOURCES
     src/widgets/AccelEnrichmentWidget.cpp
     src/widgets/TrimsWidget.cpp
     src/widgets/ColdStartWidget.cpp
-    src/widgets/SettingsDropdown.cpp
+    src/widgets/MapSensorWidget.cpp
+    src/widgets/TempSensorWidget.cpp
+    src/widgets/InjectorVisualWidget.cpp
+
     src/widgets/VVTVTECWidget.cpp
     src/widgets/BoostWidget.cpp
     src/widgets/KnockWidget.cpp
@@ -122,7 +125,10 @@ set(HEADERS
     src/widgets/AccelEnrichmentWidget.h
     src/widgets/TrimsWidget.h
     src/widgets/ColdStartWidget.h
-    src/widgets/SettingsDropdown.h
+    src/widgets/MapSensorWidget.h
+    src/widgets/TempSensorWidget.h
+    src/widgets/InjectorVisualWidget.h
+
     src/widgets/VVTVTECWidget.h
     src/widgets/BoostWidget.h
     src/widgets/KnockWidget.h

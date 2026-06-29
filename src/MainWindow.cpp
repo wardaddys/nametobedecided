@@ -12,6 +12,15 @@
 #include <QMouseEvent>
 #include <QPointer>
 #include <QStyle>
+#include <QScreen>
+#include <QGuiApplication>
+#include <QWindow>
+#ifdef Q_OS_WIN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
 
 // Include widget headers
 #include "utils/Logger.h"
@@ -28,7 +37,7 @@
 #include "widgets/DashboardWidget.h"
 #include "widgets/ECUSettingsWidget.h"
 #include "widgets/LoggingWidget.h"
-#include "widgets/SettingsDropdown.h"
+
 #include "widgets/ToothLoggerWidget.h"
 #include "widgets/ProjectWizardOverlay.h"
 #include "dialogs/ConnectionDialog.h"
@@ -40,29 +49,12 @@
 #include <QDir>
 #include <QFileInfo>
 
-class ProjectIconProvider : public QFileIconProvider {
-public:
-    ProjectIconProvider() {
-        m_projectIcon = QIcon(":/icons/app_icon.png");
-    }
-    
-    QIcon icon(const QFileInfo &info) const override {
-        if (info.isDir()) {
-            QDir dir(info.absoluteFilePath());
-            if (dir.exists("project.properties") || dir.exists("projectCfg")) {
-                return m_projectIcon;
-            }
-        }
-        return QFileIconProvider::icon(info);
-    }
-private:
-    QIcon m_projectIcon;
-};
+
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_serialManager(new SerialManager(this)),
       m_loggingManager(new LoggingManager(this)),
-      m_settingsDropdown(nullptr),
+
       m_liveTuningEnabled(false) {
   // === Section 7.1: Fix window title ===
   setWindowTitle("OS Tuner — Open-Source ECU Tuning");
@@ -79,9 +71,13 @@ MainWindow::MainWindow(QWidget *parent)
   m_projectManager = new ProjectManager(m_ecuSettingsManager, this);
   connect(m_projectManager, &ProjectManager::projectLoaded, [this](const QString &name) {
       m_projectButton->setText("Project: " + name);
-      QMessageBox::information(this, "Project Loaded", "Successfully loaded project: " + name);
+      // Remove the annoying and potentially crash-causing synchronous QMessageBox
+      
       if (!Settings::getFirstRunCompleted()) {
-          startProductTour();
+          // Defer the tour startup to avoid event loop conflicts immediately after load
+          QTimer::singleShot(200, this, [this]() {
+              startProductTour();
+          });
       }
   });
   connect(m_projectManager, &ProjectManager::projectLoadFailed, [this](const QString &error) {
@@ -98,14 +94,7 @@ MainWindow::MainWindow(QWidget *parent)
   // Check for updates silently on startup
   m_updateChecker->checkForUpdates(true);
 
-  // Create Settings Dropdown
-  m_settingsDropdown = new SettingsDropdown(this);
 
-  // Connect Settings to AllTables for conditional UI
-  if (m_settingsDropdown && m_allTablesWidget) {
-    connect(m_settingsDropdown, &SettingsDropdown::vtecSettingChanged,
-            m_allTablesWidget, &AllTablesWidget::setVtecEnabled);
-  }
 
   // Connect Serial Manager signals
   connect(m_serialManager, &SerialManager::dataReceived, this,
@@ -138,36 +127,40 @@ MainWindow::MainWindow(QWidget *parent)
 }
 
 void MainWindow::postInit() {
-  // Auto-restore the last opened project.
-  //
-  // Bug fix: previously this method always ran showEcuDefError() on failure,
-  // even when ProjectManager::projectLoadFailed had *already* shown a
-  // critical-error QMessageBox (MainWindow ctor wires that signal at line 59).
-  // That stacked two dialogs on top of each other every time the saved path
-  // pointed at a folder that no longer had a valid INI — which is exactly
-  // the "Failed to load project" + "No valid project is loaded" pair the
-  // user reported. We now stay silent on a failed auto-restore (the ctor's
-  // signal handler covers user feedback) and only prompt the user to pick a
-  // project when there was no saved path at all.
-  const QString projPath = Settings::getLastEcuDefPath();
-  if (projPath.isEmpty()) {
-    showEcuDefError();
-    return;
-  }
-  if (!QDir(projPath).exists()) {
-    Logger::warning("Last project path no longer exists: " + projPath);
-    Settings::setLastEcuDefPath("");
-    showEcuDefError();
-    return;
-  }
-  if (m_projectManager->loadProject(projPath)) {
-    Logger::info("Project loaded from settings: " + projPath);
-  } else {
-    // ProjectManager already emitted projectLoadFailed → critical dialog.
-    // Clear the stale setting so the next launch starts clean.
-    Logger::warning("Failed to load last used Project directory: " + projPath);
-    Settings::setLastEcuDefPath("");
-  }
+  // Defer initialization to the next event loop cycle so the UI is fully constructed
+  // and attached to the screen before MSQ signals hit the widgets.
+  QTimer::singleShot(0, this, [this]() {
+    // Auto-restore the last opened project.
+    //
+    // Bug fix: previously this method always ran showEcuDefError() on failure,
+    // even when ProjectManager::projectLoadFailed had *already* shown a
+    // critical-error QMessageBox (MainWindow ctor wires that signal at line 59).
+    // That stacked two dialogs on top of each other every time the saved path
+    // pointed at a folder that no longer had a valid INI — which is exactly
+    // the "Failed to load project" + "No valid project is loaded" pair the
+    // user reported. We now stay silent on a failed auto-restore (the ctor's
+    // signal handler covers user feedback) and only prompt the user to pick a
+    // project when there was no saved path at all.
+    const QString projPath = Settings::getLastEcuDefPath();
+    if (projPath.isEmpty()) {
+      showEcuDefError();
+      return;
+    }
+    if (!QDir(projPath).exists()) {
+      Logger::warning("Last project path no longer exists: " + projPath);
+      Settings::setLastEcuDefPath("");
+      showEcuDefError();
+      return;
+    }
+    if (m_projectManager->loadProject(projPath)) {
+      Logger::info("Project loaded from settings: " + projPath);
+    } else {
+      // ProjectManager already emitted projectLoadFailed → critical dialog.
+      // Clear the stale setting so the next launch starts clean.
+      Logger::warning("Failed to load last used Project directory: " + projPath);
+      Settings::setLastEcuDefPath("");
+    }
+  });
 }
 
 void MainWindow::showEcuDefError() {
@@ -189,9 +182,6 @@ void MainWindow::onOpenProject() {
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly, true);
   dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-  
-  ProjectIconProvider *iconProvider = new ProjectIconProvider;
-  dialog.setIconProvider(iconProvider);
 
   if (dialog.exec() == QDialog::Accepted) {
     QString path = dialog.selectedFiles().first();
@@ -201,7 +191,6 @@ void MainWindow::onOpenProject() {
       showEcuDefError(); // Retry
     }
   }
-  delete iconProvider;
 }
 
 MainWindow::~MainWindow() {
@@ -240,13 +229,8 @@ void MainWindow::setupUi() {
   // -- Left Section: Brand & Project --
   QLabel *appNameLabel = new QLabel("OS TUNER", this);
   appNameLabel->setObjectName("TitleBarAppName");
-  
-  QLabel *projectNamePill = new QLabel("No Project", this);
-  projectNamePill->setObjectName("ProjectNamePill");
-  projectNamePill->setProperty("unsaved", false);
 
   headerLayout->addWidget(appNameLabel);
-  headerLayout->addWidget(projectNamePill);
   headerLayout->addSpacing(20);
 
   // -- Center Section: Primary Actions --
@@ -275,7 +259,7 @@ void MainWindow::setupUi() {
   headerLayout->addStretch();
 
   // -- Right Section: Status, Help, Settings & Controls --
-  m_ecuStatusLabel = new QLabel("OFFLINE", this);
+  m_ecuStatusLabel = new QLabel("🔴 OFFLINE", this);
   m_ecuStatusLabel->setObjectName("EcuStatusPill");
   m_ecuStatusLabel->setProperty("connected", false);
 
@@ -296,20 +280,81 @@ void MainWindow::setupUi() {
   m_helpButton->setToolTip("Help & Updates");
   connect(m_helpButton, &QPushButton::clicked, this, &MainWindow::onAboutClicked);
 
-  m_settingsButton = new QPushButton(this);
-  m_settingsButton->setObjectName("SettingsIconButton");
-  m_settingsButton->setText("⚙");
-  connect(m_settingsButton, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
+
 
   // Window Controls
   QPushButton *minBtn = new QPushButton(this);
   minBtn->setObjectName("TitleBarMinimize");
   connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
-  
   QPushButton *maxBtn = new QPushButton(this);
   maxBtn->setObjectName("TitleBarMaximize");
   connect(maxBtn, &QPushButton::clicked, [this]() {
-    isMaximized() ? showNormal() : showMaximized();
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+
+    if (property("osCustomMaximized").toBool()) {
+      // --- RESTORE ---
+      setProperty("osCustomMaximized", false);
+      int l = property("osPhysL").toInt();
+      int t = property("osPhysT").toInt();
+      int w = property("osPhysW").toInt();
+      int h = property("osPhysH").toInt();
+
+      // Clamp the saved rect to the work area.
+      // This handles the case where the app's initial window size (1400x900) is
+      // larger than the screen (e.g. 1366x768 laptop), which would hide the status bar.
+      HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO mi2; mi2.cbSize = sizeof(mi2);
+      if (GetMonitorInfo(hMon, &mi2)) {
+        const RECT &wa = mi2.rcWork;
+        int waW = wa.right  - wa.left;
+        int waH = wa.bottom - wa.top;
+        if (w > waW) w = waW;          // cap width to available width
+        if (h > waH) h = waH;          // cap height to available height
+        if (l < wa.left) l = wa.left;  // don't go left of work area
+        if (t < wa.top)  t = wa.top;   // don't go above work area
+        if (l + w > wa.right)  l = wa.right  - w; // don't overflow right
+        if (t + h > wa.bottom) t = wa.bottom - h; // don't overflow below taskbar
+      }
+      SetWindowPos(hwnd, nullptr, l, t, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+
+    } else {
+      // --- MAXIMIZE ---
+      // Save the current physical window rect before touching anything.
+      RECT wr;
+      GetWindowRect(hwnd, &wr);
+      setProperty("osPhysL", (int)wr.left);
+      setProperty("osPhysT", (int)wr.top);
+      setProperty("osPhysW", (int)(wr.right  - wr.left));
+      setProperty("osPhysH", (int)(wr.bottom - wr.top));
+      setProperty("osCustomMaximized", true);
+
+      // Fill the monitor's work area (excludes taskbar, multi-monitor-aware).
+      HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO mi; mi.cbSize = sizeof(mi);
+      if (GetMonitorInfo(hMon, &mi)) {
+        const RECT &wa = mi.rcWork;
+        SetWindowPos(hwnd, nullptr,
+                     wa.left, wa.top,
+                     wa.right  - wa.left,
+                     wa.bottom - wa.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+    }
+#else
+    // Non-Windows fallback
+    if (property("osCustomMaximized").toBool()) {
+      setProperty("osCustomMaximized", false);
+      QRect saved = property("osSavedGeometry").value<QRect>();
+      if (saved.isValid()) setGeometry(saved);
+    } else {
+      setProperty("osSavedGeometry", QVariant::fromValue(geometry()));
+      setProperty("osCustomMaximized", true);
+      QScreen *s = QGuiApplication::screenAt(geometry().center());
+      if (!s) s = QGuiApplication::primaryScreen();
+      setGeometry(s->availableGeometry());
+    }
+#endif
   });
 
   QPushButton *closeBtn = new QPushButton(this);
@@ -322,7 +367,7 @@ void MainWindow::setupUi() {
   headerLayout->addWidget(m_connectButton);
   headerLayout->addSpacing(8);
   headerLayout->addWidget(m_helpButton);
-  headerLayout->addWidget(m_settingsButton);
+
   headerLayout->addSpacing(8);
   headerLayout->addWidget(minBtn);
   headerLayout->addWidget(maxBtn);
@@ -405,44 +450,85 @@ void MainWindow::setupUi() {
 void MainWindow::createStatusBar() {
   QStatusBar *bar = statusBar();
   bar->setObjectName("StatusBar");
+  bar->setStyleSheet(
+        "QStatusBar { "
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #22262d, stop:1 #121519); "
+        "  border-top: 2px solid #353b45; "
+        "}"
+  );
 
-  auto addStatusField = [&](QLabel** labelPtr, const QString& prefixName) {
-    QWidget* container = new QWidget(this);
-    QHBoxLayout* hLay = new QHBoxLayout(container);
-    hLay->setContentsMargins(0, 0, 0, 0);
-    hLay->setSpacing(4);
+  QWidget* fieldsContainer = new QWidget(this);
+  fieldsContainer->setStyleSheet("background: transparent; border: none;");
+  QHBoxLayout* hLay = new QHBoxLayout(fieldsContainer);
+  hLay->setContentsMargins(12, 4, 12, 4); 
+  hLay->setSpacing(8);
+
+  auto addStatusField = [&](QLabel** labelPtr, const QString& prefixName, int width) {
+    QFrame* screen = new QFrame(this);
+    screen->setFixedSize(width, 24);
+    screen->setStyleSheet(
+        "QFrame { "
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #080a0d, stop:1 #12161c); "
+        "  border: 1px solid; "
+        "  border-top-color: #000000; "
+        "  border-left-color: #030405; "
+        "  border-bottom-color: #3b424d; "
+        "  border-right-color: #2b323c; "
+        "  border-radius: 3px; "
+        "}"
+    );
+
+    QHBoxLayout* sLay = new QHBoxLayout(screen);
+    sLay->setContentsMargins(6, 0, 6, 0);
+    sLay->setSpacing(4);
+
+    QLabel* prefixLabel = new QLabel(prefixName, screen);
+    prefixLabel->setStyleSheet("color: #5a6678; font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 800; background: transparent; border: none;");
     
-    QLabel* prefixLabel = new QLabel(prefixName + ":", this);
-    prefixLabel->setProperty("class", "FieldLabel");
+    *labelPtr = new QLabel("0", screen);
+    (*labelPtr)->setStyleSheet("color: #00e5c8; font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 12px; font-weight: bold; background: transparent; border: none;");
+    (*labelPtr)->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     
-    *labelPtr = new QLabel("0", this);
-    (*labelPtr)->setProperty("class", "FieldValue");
-    (*labelPtr)->setProperty("alert", "safe");
+    sLay->addWidget(prefixLabel);
+    sLay->addWidget(*labelPtr, 1);
     
-    hLay->addWidget(prefixLabel);
-    hLay->addWidget(*labelPtr);
-    
-    QLabel* div = new QLabel("|", this);
-    div->setProperty("class", "FieldDivider");
-    
-    bar->addPermanentWidget(container);
-    bar->addPermanentWidget(div);
+    hLay->addWidget(screen);
   };
 
-  addStatusField(&m_rpmLabel, "RPM");
-  addStatusField(&m_mapLabel, "MAP");
-  addStatusField(&m_afrLabel, "AFR");
-  addStatusField(&m_ectLabel, "CLT");
-  addStatusField(&m_boostLabel, "BOOST");
-  addStatusField(&m_speedLabel, "SPEED");
-  addStatusField(&m_gearLabel, "GEAR");
-  addStatusField(&m_oilTLabel, "OIL T");
-  addStatusField(&m_oilPLabel, "OIL P");
-  addStatusField(&m_fuelPLabel, "FUEL P");
+  addStatusField(&m_rpmLabel, "RPM", 90);
+  addStatusField(&m_mapLabel, "MAP", 105);
+  addStatusField(&m_afrLabel, "AFR", 85);
+  addStatusField(&m_ectLabel, "CLT", 90);
+  addStatusField(&m_boostLabel, "BOOST", 115);
+  addStatusField(&m_speedLabel, "SPEED", 120);
+  addStatusField(&m_gearLabel, "GEAR", 80);
+  addStatusField(&m_oilTLabel, "OIL T", 85);
+  addStatusField(&m_oilPLabel, "OIL P", 85);
+  addStatusField(&m_fuelPLabel, "FUEL P", 90);
 
-  m_ecuSavedLabel = new QLabel("ECU Saved: ---", this);
-  m_ecuSavedLabel->setProperty("class", "FieldValue");
-  bar->addPermanentWidget(m_ecuSavedLabel);
+  QFrame* ecuFrame = new QFrame(this);
+  ecuFrame->setFixedSize(220, 24);
+  ecuFrame->setStyleSheet(
+      "QFrame { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a1610, stop:1 #241a0b); "
+      "  border: 1px solid; "
+      "  border-top-color: #000000; "
+      "  border-left-color: #050505; "
+      "  border-bottom-color: #4a3a20; "
+      "  border-right-color: #3b2e1a; "
+      "  border-radius: 3px; "
+      "}"
+  );
+  QHBoxLayout* ecuLay = new QHBoxLayout(ecuFrame);
+  ecuLay->setContentsMargins(10, 0, 10, 0);
+  m_ecuSavedLabel = new QLabel("ECU Saved: ---", ecuFrame);
+  m_ecuSavedLabel->setStyleSheet("color: #ffb800; font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 11px; font-weight: bold; background: transparent; border: none;");
+  ecuLay->addWidget(m_ecuSavedLabel, 0, Qt::AlignCenter);
+  
+  hLay->addWidget(ecuFrame);
+  hLay->addStretch(); 
+
+  bar->addWidget(fieldsContainer);
 }
 
 void MainWindow::setupDarkTheme() {
@@ -473,7 +559,7 @@ void MainWindow::onConnectionStatusChanged(ConnectionStatus status) {
 // === Section 2.2: updateConnectionUI helper ===
 void MainWindow::updateConnectionUI(bool connected) {
   if (connected) {
-    m_ecuStatusLabel->setText("ONLINE");
+    m_ecuStatusLabel->setText("🟢 CONNECTED");
     m_ecuStatusLabel->setProperty("connected", true);
     m_ecuStatusLabel->style()->unpolish(m_ecuStatusLabel);
     m_ecuStatusLabel->style()->polish(m_ecuStatusLabel);
@@ -483,7 +569,7 @@ void MainWindow::updateConnectionUI(bool connected) {
     m_connectButton->style()->unpolish(m_connectButton);
     m_connectButton->style()->polish(m_connectButton);
   } else {
-    m_ecuStatusLabel->setText("OFFLINE");
+    m_ecuStatusLabel->setText("🔴 OFFLINE");
     m_ecuStatusLabel->setProperty("connected", false);
     m_ecuStatusLabel->style()->unpolish(m_ecuStatusLabel);
     m_ecuStatusLabel->style()->polish(m_ecuStatusLabel);
@@ -646,21 +732,7 @@ void MainWindow::onReadECUChanged(int index) {
   m_readEcuCombo->setCurrentIndex(0);
 }
 
-void MainWindow::onSettingsClicked() {
-  if (!m_settingsDropdown) {
-    m_settingsDropdown = new SettingsDropdown(this);
-  }
 
-  if (m_settingsDropdown->isVisible()) {
-    m_settingsDropdown->hide();
-  } else {
-    QPoint p =
-        m_settingsButton->mapToGlobal(QPoint(0, m_settingsButton->height()));
-    p.setX(p.x() + m_settingsButton->width() - m_settingsDropdown->width());
-    m_settingsDropdown->move(p);
-    m_settingsDropdown->show();
-  }
-}
 
 // === Section 2.2: Disconnect ===
 void MainWindow::onDisconnectClicked() {
@@ -819,6 +891,41 @@ void MainWindow::mousePressEvent(QMouseEvent *event) {
 
 void MainWindow::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event);
+}
+
+// === Native resize-from-edges/corners for frameless window ===
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result) {
+#ifdef Q_OS_WIN
+    if (eventType == "windows_generic_MSG") {
+        MSG *msg = static_cast<MSG*>(message);
+        if (msg->message == WM_NCHITTEST) {
+            // Get the window's outer rect and cursor position, both in screen pixels.
+            RECT wr;
+            GetWindowRect(reinterpret_cast<HWND>(winId()), &wr);
+            const int x = static_cast<int>(static_cast<short>(LOWORD(msg->lParam)));
+            const int y = static_cast<int>(static_cast<short>(HIWORD(msg->lParam)));
+            const int m = 8; // hit-test margin (px) — feel of the resize grab zone
+
+            const bool onLeft   = (x < wr.left   + m);
+            const bool onRight  = (x > wr.right  - m);
+            const bool onTop    = (y < wr.top    + m);
+            const bool onBottom = (y > wr.bottom - m);
+
+            // Corners first (order matters — they take priority over edges)
+            if (onTop    && onLeft)  { *result = HTTOPLEFT;     return true; }
+            if (onTop    && onRight) { *result = HTTOPRIGHT;    return true; }
+            if (onBottom && onLeft)  { *result = HTBOTTOMLEFT;  return true; }
+            if (onBottom && onRight) { *result = HTBOTTOMRIGHT; return true; }
+            // Edges
+            if (onLeft)              { *result = HTLEFT;        return true; }
+            if (onRight)             { *result = HTRIGHT;       return true; }
+            if (onTop)               { *result = HTTOP;         return true; }
+            if (onBottom)            { *result = HTBOTTOM;      return true; }
+            // Everything else: let Qt handle it normally (title-bar drag, buttons, content)
+        }
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::onNewProjectClicked() {

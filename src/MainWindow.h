@@ -17,7 +17,7 @@
 class AllTablesWidget;
 class ECUSettingsWidget;
 class LoggingWidget;
-class SettingsDropdown;
+
 class ECUSettingsManager;
 class ToothLoggerWidget;
 class ProjectManager;
@@ -46,7 +46,7 @@ private slots:
   void onNewProjectClicked();
   void onProjectCreated(const QString &name, const QString &path);
   void onOpenProject(); // Added for ProjectLoader
-  void onSettingsClicked();
+
   void onAboutClicked();
   void onDisconnectClicked();
   void onEnableDemoMode();
@@ -67,6 +67,7 @@ protected:
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
   void paintEvent(QPaintEvent *event) override;
+  bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 
 private:
   QPoint m_dragPosition;
@@ -94,7 +95,7 @@ private:
   QPushButton *m_connectButton;
   QPushButton *m_saveButton;
   QComboBox *m_readEcuCombo;
-  QPushButton *m_settingsButton;
+
   QPushButton *m_helpButton;
 
   // Status Bar Labels
@@ -115,7 +116,7 @@ private:
   AllTablesWidget *m_allTablesWidget;
   ECUSettingsWidget *m_ecuSettingsWidget;
   LoggingWidget *m_loggingWidget;
-  SettingsDropdown *m_settingsDropdown;
+
   ToothLoggerWidget *m_toothLoggerWidget;
 
   ProjectWizardOverlay *m_projectWizard;
