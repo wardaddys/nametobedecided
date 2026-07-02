@@ -44,17 +44,20 @@ OS Tuner is a desktop ECU tuning application for the open-source ECU ecosystem (
 ## Build Instructions
 
 ### Requirements
+
 - Qt 6.5+ with QtSerialPort, QtNetwork, QtCharts modules
 - CMake 3.20+
 - C++17-capable compiler (MSVC 2019/2022 recommended on Windows)
 
 ### Build
+
 ```bash
 cmake -B build -DCMAKE_PREFIX_PATH=<path-to-qt6>
 cmake --build build --config Release
 ```
 
 ### Run Tests
+
 ```bash
 cmake -B build -DBUILD_TESTING=ON
 cmake --build build --config Release
@@ -62,6 +65,7 @@ ctest --test-dir build -C Release
 ```
 
 ### Package (Windows)
+
 ```bash
 cpack -C Release   # Requires NSIS
 ```
@@ -92,33 +96,41 @@ This project is in early development. If you're interested in contributing, plea
 ## Screenshots
 
 ### Startup Screen
+
 ![Startup Screen](screenshots%20of%20the%20working%20OS%20Tuner/startup_screen.png)
 The application launcher and initial startup screen, where you can connect to your ECU or launch in Simulator Mode.
 
 ### Main Dashboard
+
 ![Main Dashboard](screenshots%20of%20the%20working%20OS%20Tuner/main_dashboard.png)
 The core dashboard interface featuring real-time animated gauges, 3D traffic light state indicators, and an immersive dark-mode UI customized for in-car tuning.
 
 ### 3D Surface Table
+
 ![3D Surface Table](screenshots%20of%20the%20working%20OS%20Tuner/3d_surface_table.png)
 An interactive 3D representation of the tuning tables (e.g., VE, Ignition), allowing users to visualize and interact with the mapping surface directly.
 
 ### Table Editor
+
 ![Table Editor](screenshots%20of%20the%20working%20OS%20Tuner/table_editor.png)
 The primary 2D grid-based table editor, offering rapid cell selection, keyboard shortcuts, and gradient heatmaps for fine-tuning fuel and ignition maps.
 
 ### Split View Table
+
 ![Split View Table](screenshots%20of%20the%20working%20OS%20Tuner/split_view_table.png)
 A combined layout showing both the 2D table grid and the 3D surface map simultaneously, providing maximum context while editing map points.
 
 ### ECU Settings
+
 ![ECU Settings](screenshots%20of%20the%20working%20OS%20Tuner/ecu_settings.png)
 The comprehensive ECU settings and dialog configuration menu, dynamically generated from the ECU's INI definition file.
 
 ### Data Logging
+
 ![Data Logging](screenshots%20of%20the%20working%20OS%20Tuner/data_logging.png)
 Real-time high-speed data logging viewer, capturing engine parameters for detailed post-run telemetry analysis and engine diagnostics.
 
 ### Tooth Logger
+
 ![Tooth Logger](screenshots%20of%20the%20working%20OS%20Tuner/tooth_logger.png)
 The high-speed tooth logger diagnostic tool, providing precise visualization of crank/cam sensor timings and missing tooth gaps to help troubleshoot sync issues.

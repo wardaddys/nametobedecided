@@ -37,6 +37,7 @@ set(SOURCES
     src/core/ECUDefinition.cpp
     src/core/LoggingManager.cpp
     src/core/ECUSettingsManager.cpp
+    src/core/LogPlayer.cpp
     src/core/ProjectManager.cpp
     src/core/MsqParser.cpp
     src/core/UpdateChecker.cpp
@@ -111,6 +112,7 @@ set(HEADERS
     src/core/ECUDefinition.h
     src/core/LoggingManager.h
     src/core/ECUSettingsManager.h
+    src/core/LogPlayer.h
     src/core/ProjectManager.h
     src/core/MsqParser.h
     src/core/UpdateChecker.h

@@ -100,13 +100,16 @@ void AllTablesWidget::setupUi() {
   m_searchBox->setPlaceholderText("🔍 Search tables...");
   m_searchBox->setMinimumWidth(180);
   m_searchBox->setStyleSheet("QLineEdit { "
-                             "  background-color: #2B2B2B; "
-                             "  border: 1px solid #444; "
+                             "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141414, stop:1 #2A2A2A); "
+                             "  border: 1px solid #111; "
+                             "  border-bottom: 1px solid #4A4A4A; "
+                             "  border-right: 1px solid #3A3A3A; "
                              "  border-radius: 4px; "
                              "  padding: 8px 12px; "
-                             "  color: white; "
+                             "  color: #E0E0E0; "
                              "  font-size: 12px; "
-                             "}");
+                             "}"
+                             "QLineEdit:focus { border: 1px solid #00BCD4; }");
   connect(m_searchBox, &QLineEdit::textChanged, this,
           &AllTablesWidget::onSearchTextChanged);
 
@@ -118,18 +121,35 @@ void AllTablesWidget::setupUi() {
   toolbarLayout->addSpacing(20);
 
   // Quick Actions
+  QString skeuoButtonBase = 
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5A5A5A, stop:0.4 #3D3D3D, stop:1 #2B2B2B); "
+      "  color: #F0F0F0; "
+      "  border: 1px solid #1A1A1A; "
+      "  border-top: 1px solid #777; "
+      "  border-left: 1px solid #555; "
+      "  border-radius: 5px; "
+      "  padding: 6px 14px; "
+      "  font-size: 11px; "
+      "  font-weight: bold; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6A6A6A, stop:0.4 #4D4D4D, stop:1 #3B3B3B); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #222, stop:1 #3D3D3D); "
+      "  border-top: 1px solid #111; "
+      "  border-left: 1px solid #111; "
+      "  border-bottom: 1px solid #555; "
+      "  border-right: 1px solid #555; "
+      "}";
+
   m_copyBtn = new QPushButton("📋 Copy", this);
-  m_copyBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; color: white; border: none; "
-      "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
-      "QPushButton:hover { background-color: #444; }");
+  m_copyBtn->setStyleSheet(skeuoButtonBase);
   connect(m_copyBtn, &QPushButton::clicked, this, &AllTablesWidget::onCopyTable);
 
   m_smoothBtn = new QPushButton("📊 Smooth", this);
-  m_smoothBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; color: white; border: none; "
-      "border-radius: 4px; padding: 6px 12px; font-size: 11px; } "
-      "QPushButton:hover { background-color: #444; }");
+  m_smoothBtn->setStyleSheet(skeuoButtonBase);
   connect(m_smoothBtn, &QPushButton::clicked, this, &AllTablesWidget::onSmoothValues);
 
   toolbarLayout->addWidget(m_copyBtn);
@@ -146,23 +166,66 @@ void AllTablesWidget::setupUi() {
   m_adjustValue->setValue(0.5);
   m_adjustValue->setSingleStep(0.1);
   m_adjustValue->setStyleSheet(
-      "QDoubleSpinBox { background-color: #2B2B2B; border: 1px solid #444; "
-      "border-radius: 4px; padding: 4px; color: white; font-size: 12px; min-width: 50px; }");
+      "QDoubleSpinBox { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141414, stop:1 #2A2A2A); "
+      "  border: 1px solid #111; "
+      "  border-bottom: 1px solid #4A4A4A; "
+      "  border-right: 1px solid #3A3A3A; "
+      "  border-radius: 4px; "
+      "  padding: 4px; "
+      "  color: #E0E0E0; "
+      "  font-size: 12px; "
+      "  min-width: 50px; "
+      "}");
 
   m_adjustAddBtn = new QPushButton("+ Add", this);
   m_adjustAddBtn->setStyleSheet(
-      "QPushButton { background-color: rgba(0, 188, 212, 0.2); color: #00BCD4; "
-      "border: 1px solid rgba(0, 188, 212, 0.3); border-radius: 4px; padding: "
-      "6px 10px; font-size: 11px; } "
-      "QPushButton:hover { background-color: rgba(0, 188, 212, 0.3); }");
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #00E5FF, stop:0.4 #00ACC1, stop:1 #00838F); "
+      "  color: #FFFFFF; "
+      "  border: 1px solid #004D40; "
+      "  border-top: 1px solid #84FFFF; "
+      "  border-left: 1px solid #18FFFF; "
+      "  border-radius: 5px; "
+      "  padding: 6px 12px; "
+      "  font-size: 11px; "
+      "  font-weight: bold; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #18FFFF, stop:0.4 #00BCD4, stop:1 #0097A7); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #006064, stop:1 #0097A7); "
+      "  border-top: 1px solid #004D40; "
+      "  border-left: 1px solid #004D40; "
+      "  border-bottom: 1px solid #00ACC1; "
+      "  border-right: 1px solid #00ACC1; "
+      "}");
   connect(m_adjustAddBtn, &QPushButton::clicked, this, &AllTablesWidget::onAdjustSelected);
 
   m_adjustSubBtn = new QPushButton("- Sub", this);
   m_adjustSubBtn->setStyleSheet(
-      "QPushButton { background-color: rgba(244, 67, 54, 0.2); color: #F44336; "
-      "border: 1px solid rgba(244, 67, 54, 0.3); border-radius: 4px; padding: "
-      "6px 10px; font-size: 11px; } "
-      "QPushButton:hover { background-color: rgba(244, 67, 54, 0.3); }");
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FF5252, stop:0.4 #E53935, stop:1 #C62828); "
+      "  color: #FFFFFF; "
+      "  border: 1px solid #880E4F; "
+      "  border-top: 1px solid #FF8A80; "
+      "  border-left: 1px solid #FF5252; "
+      "  border-radius: 5px; "
+      "  padding: 6px 12px; "
+      "  font-size: 11px; "
+      "  font-weight: bold; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FF8A80, stop:0.4 #EF5350, stop:1 #D32F2F); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #B71C1C, stop:1 #D32F2F); "
+      "  border-top: 1px solid #880E4F; "
+      "  border-left: 1px solid #880E4F; "
+      "  border-bottom: 1px solid #EF5350; "
+      "  border-right: 1px solid #EF5350; "
+      "}");
   connect(m_adjustSubBtn, &QPushButton::clicked, this, &AllTablesWidget::onAdjustSelected);
 
   toolbarLayout->addWidget(adjustLabel);
@@ -178,10 +241,19 @@ void AllTablesWidget::setupUi() {
 
   m_interpolateBtn = new QPushButton(this);
   m_interpolateBtn->setCheckable(true);
-  m_interpolateBtn->setFixedSize(40, 20);
+  m_interpolateBtn->setFixedSize(44, 22);
   m_interpolateBtn->setStyleSheet(
-      "QPushButton { background-color: #3B3B3B; border-radius: 10px; } "
-      "QPushButton:checked { background-color: #00BCD4; }");
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141414, stop:1 #2A2A2A); "
+      "  border: 1px solid #111; "
+      "  border-bottom: 1px solid #4A4A4A; "
+      "  border-right: 1px solid #3A3A3A; "
+      "  border-radius: 11px; " // Pill shaped track
+      "} "
+      "QPushButton:checked { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #006064, stop:1 #00BCD4); "
+      "  border-bottom: 1px solid #84FFFF; "
+      "}");
   connect(m_interpolateBtn, &QPushButton::clicked, this, &AllTablesWidget::onInterpolate);
 
   toolbarLayout->addWidget(interpLabel);

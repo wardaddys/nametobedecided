@@ -15,6 +15,9 @@
 
 // Forward declarations — only widgets MainWindow directly owns
 class AllTablesWidget;
+class ECUDefinition;
+class LoggingManager;
+class LogPlayer;
 class ECUSettingsWidget;
 class LoggingWidget;
 
@@ -82,6 +85,7 @@ private:
   // Core Components
   SerialManager *m_serialManager;
   LoggingManager *m_loggingManager;
+  LogPlayer *m_logPlayer;
   ECUSettingsManager *m_ecuSettingsManager;
   ProjectManager *m_projectManager; // Added
   UpdateChecker *m_updateChecker;

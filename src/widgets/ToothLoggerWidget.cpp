@@ -141,8 +141,15 @@ void ToothLoggerWidget::setupUi() {
 
   // Control Card
   QFrame *cCard = new QFrame(leftPanel);
-  cCard->setStyleSheet(QString("QFrame { background-color: %1; border: 1px solid %2; border-radius: 8px; }")
-                       .arg(TunerProColors::BG_ELEVATED).arg(TunerProColors::BORDER_SUBTLE));
+  cCard->setStyleSheet(
+      "QFrame { "
+      "  background-color: #1A1A1F; "
+      "  border-radius: 8px; "
+      "  border-top: 1px solid #111; "
+      "  border-left: 1px solid #111; "
+      "  border-bottom: 1px solid #2A2A30; "
+      "  border-right: 1px solid #2A2A30; "
+      "}");
   QVBoxLayout *cL = new QVBoxLayout(cCard);
   cL->setContentsMargins(16, 16, 16, 16);
   cL->setSpacing(16);
@@ -155,26 +162,65 @@ void ToothLoggerWidget::setupUi() {
   QHBoxLayout *btnLay = new QHBoxLayout();
   m_captureBtn = new QPushButton("START CAPTURE", cCard);
   m_captureBtn->setCursor(Qt::PointingHandCursor);
-  m_captureBtn->setFixedHeight(36);
-  m_captureBtn->setStyleSheet(QString(
-      "QPushButton { background-color: %1; color: %2; border: none; border-radius: 4px; font-family: 'Inter'; font-weight: bold; font-size: 12px; }"
-  ).arg(TunerProColors::SAFE).arg(TunerProColors::BG_BASE));
+  m_captureBtn->setFixedHeight(40);
+  m_captureBtn->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #00E676, stop:0.4 #00C853, stop:1 #00A300); "
+      "  color: #FFFFFF; "
+      "  border: 1px solid #003300; "
+      "  border-top: 1px solid #69F0AE; "
+      "  border-left: 1px solid #00E676; "
+      "  border-radius: 5px; "
+      "  font-family: 'Inter'; font-weight: 900; font-size: 13px; letter-spacing: 1px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #69F0AE, stop:0.4 #00E676, stop:1 #00C853); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #004D00, stop:1 #00C853); "
+      "  border-top: 1px solid #003300; "
+      "  border-left: 1px solid #003300; "
+      "  border-bottom: 1px solid #00E676; "
+      "  border-right: 1px solid #00E676; "
+      "}");
   
   m_clearBtn = new QPushButton("CLEAR", cCard);
   m_clearBtn->setCursor(Qt::PointingHandCursor);
-  m_clearBtn->setFixedHeight(36);
-  m_clearBtn->setStyleSheet(QString(
-      "QPushButton { background-color: %1; color: %2; border: 1px solid %3; border-radius: 4px; font-family: 'Inter'; font-weight: bold; font-size: 12px; }"
-  ).arg("transparent").arg(TunerProColors::TEXT_PRIMARY).arg(TunerProColors::BORDER_STRONG));
+  m_clearBtn->setFixedHeight(40);
+  m_clearBtn->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5A5A5A, stop:0.4 #3D3D3D, stop:1 #2B2B2B); "
+      "  color: #F0F0F0; "
+      "  border: 1px solid #1A1A1A; "
+      "  border-top: 1px solid #777; "
+      "  border-left: 1px solid #555; "
+      "  border-radius: 5px; "
+      "  font-family: 'Inter'; font-weight: bold; font-size: 12px; letter-spacing: 1px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6A6A6A, stop:0.4 #4D4D4D, stop:1 #3B3B3B); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #222, stop:1 #3D3D3D); "
+      "  border-top: 1px solid #111; "
+      "  border-left: 1px solid #111; "
+      "  border-bottom: 1px solid #555; "
+      "  border-right: 1px solid #555; "
+      "}");
   
   btnLay->addWidget(m_captureBtn);
   btnLay->addWidget(m_clearBtn);
   cL->addLayout(btnLay);
 
+  QString lcdStyle = "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A0A0A, stop:1 #141414); "
+                     "border: 1px solid #000; border-bottom: 1px solid #3A3A3A; border-right: 1px solid #2A2A2A; "
+                     "border-radius: 4px; padding: 8px 12px; color: #00BCD4; font-family: 'JetBrains Mono'; "
+                     "font-size: 13px; font-weight: bold;";
+
   m_statusLabel = new QLabel("Status: Waiting", cCard);
-  m_statusLabel->setStyleSheet(QString("color: %1; font-family: 'JetBrains Mono'; font-size: 12px;").arg(TunerProColors::TEXT_SECONDARY));
+  m_statusLabel->setStyleSheet(lcdStyle);
   m_toothCountLabel = new QLabel("Teeth: 0", cCard);
-  m_toothCountLabel->setStyleSheet(m_statusLabel->styleSheet());
+  m_toothCountLabel->setStyleSheet(lcdStyle);
   
   cL->addWidget(m_statusLabel);
   cL->addWidget(m_toothCountLabel);
@@ -191,14 +237,10 @@ void ToothLoggerWidget::setupUi() {
   m_toothTable->setHorizontalHeaderLabels({"Tooth #", "Time (µs)", "Ratio"});
   m_toothTable->horizontalHeader()->setStretchLastSection(true);
   m_toothTable->verticalHeader()->hide();
-  m_toothTable->setStyleSheet(QString(
-      "QTableWidget { background: %1; border: 1px solid %2; color: %3; gridline-color: %4; font-family: 'JetBrains Mono'; font-size: 12px; }"
-      "QHeaderView::section { background: %5; color: %3; padding: 4px; border: 1px solid %4; font-family: 'Inter'; font-size: 11px; font-weight: bold; }"
-  ).arg(TunerProColors::BG_BASE)
-   .arg(TunerProColors::BORDER_SUBTLE)
-   .arg(TunerProColors::TEXT_PRIMARY)
-   .arg(TunerProColors::BORDER_DEFAULT)
-   .arg(TunerProColors::BG_ELEVATED));
+  m_toothTable->setStyleSheet(
+      "QTableWidget { background: #141414; border: 1px solid #111; border-bottom: 1px solid #3A3A3A; border-right: 1px solid #2A2A2A; border-radius: 4px; color: #E0E0E0; gridline-color: #222; font-family: 'JetBrains Mono'; font-size: 12px; }"
+      "QHeaderView::section { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #333, stop:1 #222); color: #FFF; padding: 4px; border: 1px solid #111; border-right: 1px solid #444; border-bottom: 1px solid #444; font-family: 'Inter'; font-size: 11px; font-weight: bold; }"
+  );
    
   tL->addWidget(m_toothTable);
   leftLay->addWidget(tCard, 1);
@@ -239,11 +281,32 @@ void ToothLoggerWidget::onCaptureClicked() {
   m_capturing = !m_capturing;
   if (m_capturing) {
     m_captureBtn->setText("STOP CAPTURE");
-    m_captureBtn->setStyleSheet(QString(
-      "QPushButton { background-color: %1; color: %2; border: none; border-radius: 4px; font-family: 'Inter'; font-weight: bold; font-size: 12px; }"
-    ).arg(TunerProColors::DANGER).arg(TunerProColors::TEXT_PRIMARY));
+    m_captureBtn->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FF5252, stop:0.4 #E53935, stop:1 #C62828); "
+      "  color: #FFFFFF; "
+      "  border: 1px solid #880E4F; "
+      "  border-top: 1px solid #FF8A80; "
+      "  border-left: 1px solid #FF5252; "
+      "  border-radius: 5px; "
+      "  font-family: 'Inter'; font-weight: 900; font-size: 13px; letter-spacing: 1px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FF8A80, stop:0.4 #EF5350, stop:1 #D32F2F); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #B71C1C, stop:1 #D32F2F); "
+      "  border-top: 1px solid #880E4F; "
+      "  border-left: 1px solid #880E4F; "
+      "  border-bottom: 1px solid #EF5350; "
+      "  border-right: 1px solid #EF5350; "
+      "}");
     m_statusLabel->setText("Status: Capturing...");
-    m_statusLabel->setStyleSheet(QString("color: %1; font-family: 'JetBrains Mono'; font-size: 12px;").arg(TunerProColors::SAFE));
+    m_statusLabel->setStyleSheet(
+        "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A0A0A, stop:1 #141414); "
+        "border: 1px solid #000; border-bottom: 1px solid #3A3A3A; border-right: 1px solid #2A2A2A; "
+        "border-radius: 4px; padding: 8px 12px; color: #00E676; font-family: 'JetBrains Mono'; "
+        "font-size: 13px; font-weight: bold;");
     Logger::info("ToothLogger: Capture started");
 
     // Send 'T' command to ECU to request tooth log data
@@ -258,11 +321,32 @@ void ToothLoggerWidget::onCaptureClicked() {
     }
   } else {
     m_captureBtn->setText("START CAPTURE");
-    m_captureBtn->setStyleSheet(QString(
-      "QPushButton { background-color: %1; color: %2; border: none; border-radius: 4px; font-family: 'Inter'; font-weight: bold; font-size: 12px; }"
-    ).arg(TunerProColors::SAFE).arg(TunerProColors::BG_BASE));
+    m_captureBtn->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #00E676, stop:0.4 #00C853, stop:1 #00A300); "
+      "  color: #FFFFFF; "
+      "  border: 1px solid #003300; "
+      "  border-top: 1px solid #69F0AE; "
+      "  border-left: 1px solid #00E676; "
+      "  border-radius: 5px; "
+      "  font-family: 'Inter'; font-weight: 900; font-size: 13px; letter-spacing: 1px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #69F0AE, stop:0.4 #00E676, stop:1 #00C853); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #004D00, stop:1 #00C853); "
+      "  border-top: 1px solid #003300; "
+      "  border-left: 1px solid #003300; "
+      "  border-bottom: 1px solid #00E676; "
+      "  border-right: 1px solid #00E676; "
+      "}");
     m_statusLabel->setText("Status: Stopped");
-    m_statusLabel->setStyleSheet(QString("color: %1; font-family: 'JetBrains Mono'; font-size: 12px;").arg(TunerProColors::TEXT_SECONDARY));
+    m_statusLabel->setStyleSheet(
+        "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A0A0A, stop:1 #141414); "
+        "border: 1px solid #000; border-bottom: 1px solid #3A3A3A; border-right: 1px solid #2A2A2A; "
+        "border-radius: 4px; padding: 8px 12px; color: #FF5252; font-family: 'JetBrains Mono'; "
+        "font-size: 13px; font-weight: bold;");
     Logger::info("ToothLogger: Capture stopped");
   }
 }

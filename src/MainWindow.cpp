@@ -37,7 +37,7 @@
 #include "widgets/DashboardWidget.h"
 #include "widgets/ECUSettingsWidget.h"
 #include "widgets/LoggingWidget.h"
-
+#include "core/LogPlayer.h"
 #include "widgets/ToothLoggerWidget.h"
 #include "widgets/ProjectWizardOverlay.h"
 #include "dialogs/ConnectionDialog.h"
@@ -64,6 +64,7 @@ MainWindow::MainWindow(QWidget *parent)
   setWindowFlags(Qt::FramelessWindowHint | Qt::Window);
 
   // Create centralized ECU Settings Manager before UI setup
+  m_logPlayer = new LogPlayer(this);
   m_ecuSettingsManager = new ECUSettingsManager(this);
   m_ecuSettingsManager->setSerialManager(m_serialManager);
   
@@ -229,26 +230,78 @@ void MainWindow::setupUi() {
   // -- Left Section: Brand & Project --
   QLabel *appNameLabel = new QLabel("OS TUNER", this);
   appNameLabel->setObjectName("TitleBarAppName");
+  appNameLabel->setStyleSheet(
+      "QLabel {"
+      "  font-family: 'Inter', sans-serif;"
+      "  font-size: 22px;"
+      "  font-weight: 900;"
+      "  letter-spacing: 2px;"
+      "  color: #00BCD4;"
+      "  background: transparent;"
+      "  border-bottom: 2px solid rgba(0, 188, 212, 0.3);"
+      "}");
 
   headerLayout->addWidget(appNameLabel);
   headerLayout->addSpacing(20);
 
   // -- Center Section: Primary Actions --
+  QString skeuoHeaderBtn = 
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4A4A4A, stop:0.4 #333333, stop:1 #1A1A1A); "
+      "  color: #E0E0E0; "
+      "  border: 1px solid #000000; "
+      "  border-top: 1px solid #666666; "
+      "  border-left: 1px solid #555555; "
+      "  border-radius: 6px; "
+      "  padding: 6px 16px; "
+      "  font-family: 'Inter', sans-serif; "
+      "  font-size: 13px; "
+      "  font-weight: bold; "
+      "  letter-spacing: 0.5px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5A5A5A, stop:0.4 #404040, stop:1 #252525); "
+      "  color: #FFFFFF; "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #111111, stop:1 #2B2B2B); "
+      "  border-top: 1px solid #000000; "
+      "  border-left: 1px solid #000000; "
+      "  border-bottom: 1px solid #444444; "
+      "  border-right: 1px solid #444444; "
+      "}";
+
   m_newProjectButton = new QPushButton("New Project", this);
   m_newProjectButton->setObjectName("SaveButton");
+  m_newProjectButton->setStyleSheet(skeuoHeaderBtn);
   connect(m_newProjectButton, &QPushButton::clicked, this, &MainWindow::onNewProjectClicked);
 
   m_projectButton = new QPushButton("Open Project", this);
   m_projectButton->setObjectName("SaveButton");
+  m_projectButton->setStyleSheet(skeuoHeaderBtn);
   connect(m_projectButton, &QPushButton::clicked, this, &MainWindow::onOpenProject);
 
   m_saveButton = new QPushButton("Save", this);
   m_saveButton->setObjectName("SaveButton");
   m_saveButton->setProperty("hasChanges", false);
+  m_saveButton->setStyleSheet(skeuoHeaderBtn);
   connect(m_saveButton, &QPushButton::clicked, this, &MainWindow::onSaveClicked);
 
   m_readEcuCombo = new QComboBox(this);
   m_readEcuCombo->setObjectName("ComPortSelector");
+  m_readEcuCombo->setStyleSheet(
+      "QComboBox { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141414, stop:1 #2A2A2A); "
+      "  border: 1px solid #111; "
+      "  border-bottom: 1px solid #4A4A4A; "
+      "  border-right: 1px solid #3A3A3A; "
+      "  border-radius: 6px; "
+      "  padding: 6px 12px; "
+      "  color: #00BCD4; "
+      "  font-size: 13px; "
+      "  font-weight: bold; "
+      "} "
+      "QComboBox::drop-down { border: none; }");
   m_readEcuCombo->addItems({"Sync ECU", "Read All", "Write All"});
   connect(m_readEcuCombo, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onReadECUChanged);
 
@@ -262,22 +315,101 @@ void MainWindow::setupUi() {
   m_ecuStatusLabel = new QLabel("🔴 OFFLINE", this);
   m_ecuStatusLabel->setObjectName("EcuStatusPill");
   m_ecuStatusLabel->setProperty("connected", false);
+  m_ecuStatusLabel->setStyleSheet(
+      "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2A0000, stop:1 #110000); "
+      "border: 1px solid #000; "
+      "border-bottom: 1px solid #5A0000; "
+      "border-right: 1px solid #3A0000; "
+      "border-radius: 12px; "
+      "padding: 4px 12px; "
+      "color: #FF5252; "
+      "font-family: 'Inter', sans-serif; "
+      "font-weight: 900; "
+      "font-size: 12px;"
+  );
 
   m_liveTuningButton = new QPushButton("LIVE", this);
   m_liveTuningButton->setObjectName("LiveTuningToggle");
   m_liveTuningButton->setProperty("active", false);
   m_liveTuningButton->setCursor(Qt::PointingHandCursor);
+  m_liveTuningButton->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1E1E1E, stop:1 #111111); "
+      "  color: #666; "
+      "  border: 1px solid #000; "
+      "  border-bottom: 1px solid #333; "
+      "  border-right: 1px solid #222; "
+      "  border-radius: 12px; "
+      "  padding: 4px 14px; "
+      "  font-family: 'Inter', sans-serif; "
+      "  font-weight: 900; "
+      "  font-size: 12px; "
+      "} "
+      "QPushButton:checked { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFB300, stop:1 #F57C00); "
+      "  color: #FFF; "
+      "  border: 1px solid #BF360C; "
+      "  border-top: 1px solid #FFE082; "
+      "  border-left: 1px solid #FFCA28; "
+      "}"
+  );
   connect(m_liveTuningButton, &QPushButton::clicked, this, &MainWindow::onLiveTuningToggled);
 
   m_connectButton = new QPushButton("Connect", this);
   m_connectButton->setObjectName("ConnectButton");
   m_connectButton->setProperty("connected", false);
+  m_connectButton->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #00E676, stop:0.4 #00C853, stop:1 #00A300); "
+      "  color: #FFFFFF; "
+      "  border: 1px solid #003300; "
+      "  border-top: 1px solid #69F0AE; "
+      "  border-left: 1px solid #00E676; "
+      "  border-radius: 6px; "
+      "  padding: 6px 16px; "
+      "  font-family: 'Inter', sans-serif; "
+      "  font-weight: 900; "
+      "  font-size: 13px; "
+      "  letter-spacing: 1px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #69F0AE, stop:0.4 #00E676, stop:1 #00C853); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #004D00, stop:1 #00C853); "
+      "  border-top: 1px solid #003300; "
+      "  border-left: 1px solid #003300; "
+      "  border-bottom: 1px solid #00E676; "
+      "  border-right: 1px solid #00E676; "
+      "}"
+  );
   connect(m_connectButton, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
 
   m_helpButton = new QPushButton(this);
-  m_helpButton->setObjectName("HelpIconButton"); // Use custom objectName
+  m_helpButton->setObjectName("HelpIconButton");
   m_helpButton->setText("?");
   m_helpButton->setToolTip("Help & Updates");
+  m_helpButton->setFixedSize(30, 30);
+  m_helpButton->setStyleSheet(
+      "QPushButton { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3A3A3A, stop:1 #1A1A1A); "
+      "  color: #FFF; "
+      "  border: 1px solid #000; "
+      "  border-top: 1px solid #666; "
+      "  border-radius: 15px; "
+      "  font-family: 'Inter', sans-serif; "
+      "  font-weight: 900; "
+      "  font-size: 14px; "
+      "} "
+      "QPushButton:hover { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4A4A4A, stop:1 #2A2A2A); "
+      "} "
+      "QPushButton:pressed { "
+      "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A0A0A, stop:1 #1A1A1A); "
+      "  border-top: 1px solid #000; "
+      "  border-bottom: 1px solid #444; "
+      "}"
+  );
   connect(m_helpButton, &QPushButton::clicked, this, &MainWindow::onAboutClicked);
 
 
@@ -393,9 +525,7 @@ void MainWindow::setupUi() {
 
   // Connect Logging Widget
   connect(m_loggingWidget, &LoggingWidget::startRequested, [this]() {
-    if (m_loggingManager->startLogging()) {
-      m_loggingWidget->setStatus(true, "Documents/OSTuner/Logs");
-    }
+    m_loggingManager->startLogging();
   });
   connect(m_loggingWidget, &LoggingWidget::stopRequested, [this]() {
     m_loggingManager->stopLogging();
@@ -407,7 +537,10 @@ void MainWindow::setupUi() {
       m_loggingManager, &LoggingManager::loggingStarted,
       [this](const QString &path) { m_loggingWidget->setStatus(true, path); });
   connect(m_loggingManager, &LoggingManager::loggingStopped,
-          [this]() { m_loggingWidget->setStatus(false); });
+          [this]() { 
+              m_loggingWidget->setStatus(false); 
+              m_loggingWidget->refreshLogList();
+          });
   connect(m_loggingManager, &LoggingManager::bufferUsageUpdated,
           m_loggingWidget, &LoggingWidget::setBufferUsage);
   connect(m_loggingManager, &LoggingManager::errorOccurred,
@@ -415,6 +548,21 @@ void MainWindow::setupUi() {
             QMessageBox::warning(this, "Logging Error", err);
             m_loggingWidget->setStatus(false);
           });
+
+  // Connect Log Player
+  connect(m_loggingWidget, &LoggingWidget::playbackPlayRequested, [this](const QString &path) {
+      if (!m_logPlayer->hasLogLoaded() || m_logPlayer->getLogName() != QFileInfo(path).fileName()) {
+          m_logPlayer->loadLog(path);
+      }
+      m_logPlayer->play();
+  });
+  connect(m_loggingWidget, &LoggingWidget::playbackPauseRequested, m_logPlayer, &LogPlayer::pause);
+  connect(m_loggingWidget, &LoggingWidget::playbackStopRequested, m_logPlayer, &LogPlayer::stop);
+  connect(m_loggingWidget, &LoggingWidget::playbackSeekRequested, m_logPlayer, &LogPlayer::seek);
+  
+  connect(m_logPlayer, &LogPlayer::stateChanged, m_loggingWidget, &LoggingWidget::setPlaybackState);
+  connect(m_logPlayer, &LogPlayer::playbackProgress, m_loggingWidget, &LoggingWidget::setPlaybackProgress);
+  connect(m_logPlayer, &LogPlayer::dataFrameReady, this, &MainWindow::updateRealtimeData);
 
   // Add Tabs - Consolidated layout
   m_tabWidget->addTab(m_dashboard, "Dashboard");

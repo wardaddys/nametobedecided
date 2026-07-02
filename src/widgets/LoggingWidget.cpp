@@ -7,6 +7,11 @@
 #include <QFrame>
 #include <QPainter>
 #include <QDateTime>
+#include <QDir>
+#include <QStandardPaths>
+#include <QFileInfo>
+#include <QSlider>
+#include <QCoreApplication>
 
 // ===================================
 // BufferBar Custom Visualizer
@@ -49,6 +54,35 @@ void BufferBar::paintEvent(QPaintEvent *event) {
 
 LoggingWidget::LoggingWidget(QWidget *parent) : QWidget(parent) { setupUi(); }
 LoggingWidget::~LoggingWidget() {}
+
+void LoggingWidget::refreshLogList() {
+    m_recentLogsList->clear();
+    
+    QFileInfoList allLogs;
+    
+    // Check Documents
+    QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    QDir docsDir(docs + "/OSTuner/Logs");
+    if (docsDir.exists()) {
+        allLogs.append(docsDir.entryInfoList(QStringList() << "*.csv", QDir::Files, QDir::Time));
+    }
+    
+    // Check App Path (Fallback)
+    QDir appDir(QCoreApplication::applicationDirPath() + "/Logs");
+    if (appDir.exists()) {
+        allLogs.append(appDir.entryInfoList(QStringList() << "*.csv", QDir::Files, QDir::Time));
+    }
+    
+    // Sort by time (newest first)
+    std::sort(allLogs.begin(), allLogs.end(), [](const QFileInfo &a, const QFileInfo &b) {
+        return a.lastModified() > b.lastModified();
+    });
+    
+    for (const QFileInfo &fi : allLogs) {
+        QListWidgetItem *item = new QListWidgetItem("📄 " + fi.fileName(), m_recentLogsList);
+        item->setData(Qt::UserRole, fi.absoluteFilePath());
+    }
+}
 
 void LoggingWidget::setupUi() {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -251,9 +285,58 @@ void LoggingWidget::setupUi() {
         "QListWidget::item:hover { background-color: #2A2A30; border-color: #3D3D48; }"
         ).arg(TunerProColors::TEXT_PRIMARY));
     
-    // Add dummy item with a nice file icon prefix if possible, or just raw text
-    m_recentLogsList->addItem("📄 " + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm_track_session.csv"));
+    m_recentLogsList->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(m_recentLogsList, &QListWidget::itemClicked, this, &LoggingWidget::onLogSelected);
     rlL->addWidget(m_recentLogsList);
+    
+    // Playback Controls (hidden by default)
+    m_playbackControlsWidget = new QWidget(cardLogs);
+    QVBoxLayout *pbL = new QVBoxLayout(m_playbackControlsWidget);
+    pbL->setContentsMargins(0, 8, 0, 0);
+    
+    QLabel *pbTitle = new QLabel("PLAYBACK CONTROLS", m_playbackControlsWidget);
+    pbTitle->setStyleSheet(QString("font-family: 'Inter'; font-size: 11px; font-weight: 800; color: %1;").arg(TunerProColors::TEXT_MUTED));
+    pbL->addWidget(pbTitle);
+    
+    QHBoxLayout *pbBtnsL = new QHBoxLayout();
+    m_playPauseBtn = new QPushButton("PLAY", m_playbackControlsWidget);
+    m_playPauseBtn->setStyleSheet(QString(
+        "QPushButton { background-color: %1; color: %2; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #69F0AE; }"
+    ).arg(TunerProColors::SAFE).arg(TunerProColors::BG_BASE));
+    connect(m_playPauseBtn, &QPushButton::clicked, this, &LoggingWidget::onPlayPauseClicked);
+    
+    m_stopBtn = new QPushButton("STOP", m_playbackControlsWidget);
+    m_stopBtn->setStyleSheet(QString(
+        "QPushButton { background-color: #333; color: %1; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }"
+        "QPushButton:hover { background-color: #444; }"
+    ).arg(TunerProColors::TEXT_PRIMARY));
+    connect(m_stopBtn, &QPushButton::clicked, this, &LoggingWidget::onStopClicked);
+    
+    pbBtnsL->addWidget(m_playPauseBtn);
+    pbBtnsL->addWidget(m_stopBtn);
+    pbBtnsL->addStretch();
+    pbL->addLayout(pbBtnsL);
+    
+    QHBoxLayout *pbSliderL = new QHBoxLayout();
+    m_playbackTimeLabel = new QLabel("00:00 / 00:00", m_playbackControlsWidget);
+    m_playbackTimeLabel->setStyleSheet(QString("font-family: 'JetBrains Mono'; color: %1; font-size: 11px;").arg(TunerProColors::TEXT_MUTED));
+    m_playbackSlider = new QSlider(Qt::Horizontal, m_playbackControlsWidget);
+    m_playbackSlider->setRange(0, 100);
+    m_playbackSlider->setStyleSheet(
+        "QSlider::groove:horizontal { border: 1px solid #333; height: 4px; background: #222; border-radius: 2px; }"
+        "QSlider::handle:horizontal { background: #00BCD4; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }"
+    );
+    connect(m_playbackSlider, &QSlider::sliderMoved, this, &LoggingWidget::onSliderMoved);
+    
+    pbSliderL->addWidget(m_playbackSlider);
+    pbSliderL->addWidget(m_playbackTimeLabel);
+    pbL->addLayout(pbSliderL);
+    
+    m_playbackControlsWidget->setVisible(false);
+    rlL->addWidget(m_playbackControlsWidget);
+    
+    refreshLogList(); // Populate list
     
     grid->addWidget(cardLogs, 1, 1);
     grid->setRowStretch(1, 1); // Allow bottom rows to stretch somewhat
@@ -300,4 +383,65 @@ void LoggingWidget::updateStats(qint64 records, qint64 bytes, double rate) {
 
 void LoggingWidget::setBufferUsage(int percentage) {
   m_bufferBar->setValue(percentage);
+}
+
+void LoggingWidget::onLogSelected() {
+    QListWidgetItem *item = m_recentLogsList->currentItem();
+    if (item) {
+        m_selectedLogPath = item->data(Qt::UserRole).toString();
+        m_playbackControlsWidget->setVisible(true);
+        // Reset slider
+        m_playbackSlider->setValue(0);
+        m_playbackTimeLabel->setText("Ready");
+        
+        // Let main window load it? Or emit play request when PLAY is clicked.
+    }
+}
+
+void LoggingWidget::onPlayPauseClicked() {
+    if (m_playPauseBtn->text() == "PLAY") {
+        if (!m_selectedLogPath.isEmpty()) {
+            emit playbackPlayRequested(m_selectedLogPath);
+        }
+    } else {
+        emit playbackPauseRequested();
+    }
+}
+
+void LoggingWidget::onStopClicked() {
+    emit playbackStopRequested();
+}
+
+void LoggingWidget::onSliderMoved(int value) {
+    emit playbackSeekRequested(value);
+}
+
+void LoggingWidget::setPlaybackState(bool isPlaying) {
+    if (isPlaying) {
+        m_playPauseBtn->setText("PAUSE");
+        m_playPauseBtn->setStyleSheet(QString(
+            "QPushButton { background-color: %1; color: %2; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #FF7B00; }"
+        ).arg(TunerProColors::WARN).arg(TunerProColors::BG_BASE));
+    } else {
+        m_playPauseBtn->setText("PLAY");
+        m_playPauseBtn->setStyleSheet(QString(
+            "QPushButton { background-color: %1; color: %2; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #69F0AE; }"
+        ).arg(TunerProColors::SAFE).arg(TunerProColors::BG_BASE));
+    }
+}
+
+void LoggingWidget::setPlaybackProgress(int currentMs, int totalMs) {
+    if (!m_playbackSlider->isSliderDown()) {
+        int pct = totalMs > 0 ? (currentMs * 100) / totalMs : 0;
+        m_playbackSlider->setValue(pct);
+    }
+    
+    QTime cur(0, 0, 0);
+    cur = cur.addMSecs(currentMs);
+    QTime tot(0, 0, 0);
+    tot = tot.addMSecs(totalMs);
+    
+    m_playbackTimeLabel->setText(cur.toString("mm:ss") + " / " + tot.toString("mm:ss"));
 }
